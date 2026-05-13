@@ -75,17 +75,29 @@ export CRITIC_MODEL="gpt-4o"
 ### 运行示例
 
 ```python
+import numpy as np
 import asyncio
 from alpha_mining.config import AlphaMiningConfig
 from alpha_mining.workflow import run_mining
 
-# 定义基线因子库
+# 基线因子必须使用Python class格式（实现AlphaFactorTemplate接口）
 baseline_factors = [
     {
         "id": "baseline-1",
         "name": "Momentum 20d",
-        "code": "(close - close.shift(20)) / close.shift(20)",
+        "code": '''class MomentumAlpha:
+    def __init__(self, window: int = 20, **kwargs):
+        self.window = window
+
+    def compute(self, data: dict) -> np.ndarray:
+        close = data["close"]
+        return (close - close.shift(self.window)) / close.shift(self.window)
+
+    def get_name(self) -> str:
+        return f"Momentum_{self.window}d"
+''',
         "description": "20日动量因子",
+        "parameters": {"window": 20},
         "evaluation": {"ic_mean": 0.03, "sharpe": 0.8}
     }
 ]

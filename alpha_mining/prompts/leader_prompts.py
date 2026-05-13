@@ -83,7 +83,7 @@ Iteration: {iteration}
 Max Iterations: {max_iterations}
 
 ## BASELINE FACTOR LIBRARY
-These are the existing factors to improve upon:
+These are the existing factors to improve upon (MUST use Python class format implementing AlphaFactorTemplate):
 {baseline_factor_library}
 
 ## Exploration Progress
