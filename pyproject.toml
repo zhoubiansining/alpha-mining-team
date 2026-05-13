@@ -16,6 +16,16 @@ dev = [
     "pytest",
     "pytest-asyncio",
 ]
+data-api = [
+    "akshare>=1.18",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "fastapi>=0.110",
+    "uvicorn>=0.30",
+]
+
+[project.scripts]
+data-api = "data_api.main:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]

@@ -1,3 +1,4 @@
+data_api/cache_store
 # Python
 __pycache__/
 *.py[cod]

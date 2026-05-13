@@ -97,6 +97,72 @@ result = await run_mining(config, baseline_factors)
 pytest tests/ -v
 ```
 
+## Data API (模块 1 + 2：行情数据接入)
+
+`data_api/` 提供基于 akshare 的真实 A 股行情 HTTP 服务，对应 alpha_pipeline 的
+Data IO + Featurizer 底层。落盘 parquet 缓存，新浪为主，东方财富兜底。
+
+### 启动
+
+```bash
+pip install -e ".[data-api]"
+data-api  # 默认监听 0.0.0.0:8001，可用 DATA_API_PORT 覆盖
+```
+
+### 支持市场 (`market` 参数)
+
+| market       | 日线 | 分钟 | universe          | 符号示例                       |
+| ------------ | ---- | ---- | ----------------- | ------------------------------ |
+| `cn_stock`   | ✅   | ✅   | A-share / HS300 / ZZ500 / ZZ1000 / SSE50 | `600000`, `SHSE.600000`, `sh600000` |
+| `us_stock`   | ✅   | ❌   | 全部 (~6k)        | `AAPL`, `US.AAPL`             |
+| `hk_stock`   | ✅   | ❌   | 全部              | `00700`, `HK.00700`           |
+| `cn_etf`     | ✅   | ❌   | 全部 (~1500)      | `510300`, `SHSE.510300`       |
+| `cn_index`   | ✅   | ❌   | 别名列表          | `HS300`, `CYB`, `SHCOMP`      |
+| `cn_future`  | ✅   | ❌   | 主力合约 ~20 个   | `IF0`, `RB0`, `CU0`           |
+| `fx`         | ✅   | ❌   | USD/EUR/JPY/...   | `USD`, `EUR`, `HKD`           |
+
+> 分钟数据仅 `cn_stock` 当前可用，且最多保留最近约 12 个交易日（akshare 新浪源限制）。
+
+### 端点
+
+| Method | Path                  | 说明                                  |
+| ------ | --------------------- | ------------------------------------- |
+| GET    | `/health`             | 健康检查                              |
+| GET    | `/markets`            | 列出所有可用 market 名称              |
+| GET    | `/universe`           | 成分股列表，按 `market` + `name` 查询 |
+| GET    | `/trade_calendar`     | A 股区间内交易日 (YYYY-MM-DD)         |
+| GET    | `/bars/minute`        | 单标的分钟 K 线（含 vwap）            |
+| POST   | `/bars/minute/panel`  | 多标的分钟面板，最多 50 只            |
+| GET    | `/bars/daily`         | 单标的日线，跨市场通用                |
+
+### 示例
+
+```bash
+# A 股
+curl "http://localhost:8001/bars/daily?market=cn_stock&symbol=SHSE.600519&start=2026-01-01&end=2026-05-12&adjust=qfq"
+curl "http://localhost:8001/bars/minute?market=cn_stock&symbol=SHSE.600000&period=1"
+
+# 美股
+curl "http://localhost:8001/bars/daily?market=us_stock&symbol=AAPL&start=2026-01-01&end=2026-05-12"
+
+# 港股
+curl "http://localhost:8001/bars/daily?market=hk_stock&symbol=00700&start=2026-01-01&end=2026-05-12"
+
+# ETF / 指数 / 期货 / 汇率
+curl "http://localhost:8001/bars/daily?market=cn_etf&symbol=510300&start=2026-01-01&end=2026-05-12"
+curl "http://localhost:8001/bars/daily?market=cn_index&symbol=HS300&start=2026-01-01&end=2026-05-12"
+curl "http://localhost:8001/bars/daily?market=cn_future&symbol=IF0&start=2026-01-01&end=2026-05-12"
+curl "http://localhost:8001/bars/daily?market=fx&symbol=USD&start=2026-01-01&end=2026-05-13"
+
+# Universe
+curl "http://localhost:8001/universe?market=us_stock&name=all"
+curl "http://localhost:8001/universe?market=cn_stock&name=HS300&canonical=true"
+```
+
+字段与 backtest.md 对齐：分钟 bar 返回 `open/high/low/close/volume/amount/vwap`，
+日线 bar 返回 `open/high/low/close/volume/amount/pct_chg/turnover_rate`。新增 market 只需要
+在 `data_api/markets/` 下放一个文件并在 `markets/__init__.py` 注册。
+
 ## 对接回测框架
 
 详见 `../docs/integration_spec.md`，包含HTTP接口规范、错误码定义和合规检查要求。
