@@ -157,13 +157,14 @@ class TestLeaderDecision:
             reason="Quality improving",
             optimization_direction="Focus on momentum",
             focus_areas=["momentum", "volume"],
-            selected_for_context=["alpha-1", "alpha-2"],
+            selected_factor_id="alpha-1",
+            reasoning_for_selection="Best IC among current candidates",
             suggestions_to_proposer=["Try shorter windows"],
         )
 
         assert decision.should_continue is True
         assert decision.optimization_direction == "Focus on momentum"
-        assert len(decision.selected_for_context) == 2
+        assert decision.selected_factor_id == "alpha-1"
 
     def test_create_decision_stop(self):
         """Test creating a stop decision."""

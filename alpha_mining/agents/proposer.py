@@ -165,6 +165,7 @@ def _validate_alpha_list(items: list) -> list[dict]:
                 "description": item.get("description", ""),
                 "parameters": item.get("parameters", {}),
                 "intuition": item.get("intuition", ""),
+                "optimization_rationale": item.get("optimization_rationale", ""),
                 "improvement_targets": item.get("improvement_targets", []),
             }
             results.append(alpha)

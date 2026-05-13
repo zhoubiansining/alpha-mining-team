@@ -133,6 +133,8 @@ def _build_feedback_from_dict(data: dict, alpha_id: str, iteration: int) -> dict
         "concerns": data.get("concerns", []),
         "actionable_suggestions": data.get("actionable_suggestions", []),
         "can_proceed": data.get("can_proceed", False),
+        "expected_match_score": data.get("expected_match_score", 0.5),
+        "expected_match_reason": data.get("expected_match_reason", ""),
     }
 
 
@@ -152,4 +154,6 @@ def _default_feedback(alpha_id: str, iteration: int) -> dict:
         "concerns": ["Parse error"],
         "actionable_suggestions": [],
         "can_proceed": False,
+        "expected_match_score": 0.5,
+        "expected_match_reason": "Default due to parse error",
     }

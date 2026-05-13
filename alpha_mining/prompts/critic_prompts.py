@@ -25,6 +25,28 @@ The backtesting framework handles this separately. Focus only on:
 3. **Robustness**: Consistent across periods/conditions?
 4. **Diversification**: Adds value beyond baseline factors?
 
+## Expected Match Score (Key Evaluation)
+Evaluate how well the Proposer's optimization rationale matches the actual backtest results.
+
+The Expected Match Score is a critical dimension that bridges the INTENT (what Proposer designed) with the OUTCOME (what backtest achieved):
+
+**Score 0.0-0.3 (Poor Match)**: The factor's backtest behavior contradicts the stated optimization rationale
+- Example: Proposer designed for "momentum capture" but actual returns show mean-reversion
+- Example: Proposer expected "lower volatility" but measured volatility increased
+
+**Score 0.4-0.6 (Partial Match)**: The optimization achieved some but not all intended goals
+- Example: Proposer intended "medium-term momentum" and saw positive IC, but the effect was weaker than expected
+- Example: Factor improved Sharpe but not IC as predicted
+
+**Score 0.7-1.0 (Good Match)**: The backtest results validate the optimization rationale
+- Example: Proposer targeted "momentum reversal" and observed the expected reversal pattern
+- Example: Design for "volatility smoothing" produced visibly smoother factor series
+
+When scoring, consider:
+1. Does the backtest evidence support the stated optimization rationale?
+2. Are the predicted improvements actually observed in metrics?
+3. Is the direction of effect (positive/negative) consistent with Proposer's intent?
+
 ## Output Format
 Output JSON for each factor:
 ```json
@@ -51,7 +73,9 @@ Output JSON for each factor:
     "actionable_suggestions": [
         "Suggestion grounded in the data"
     ],
-    "can_proceed": true/false
+    "can_proceed": true/false,
+    "expected_match_score": 0.0-1.0,
+    "expected_match_reason": "Analysis of how well Proposer's optimization rationale matches actual backtest results"
 }}
 ```
 
@@ -65,6 +89,9 @@ Alpha ID: {alpha_id}
 Name: {alpha_name}
 Description: {description}
 Code: {code}
+
+## Proposer's Optimization Rationale
+{optimization_rationale}
 
 ## Backtest Results from Evaluator
 {evaluation_results}

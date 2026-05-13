@@ -51,8 +51,9 @@ def create_alpha(
     description: str,
     parameters: dict,
     iteration: int,
-    parent_ids: list | None = None,
+    parent_id: str | None = None,
     intuition: str = "",
+    optimization_rationale: str = "",
     improvement_targets: list | None = None,
 ) -> AlphaExpression:
     """创建并存储一个alpha因子"""
@@ -63,8 +64,9 @@ def create_alpha(
         description=description,
         parameters=parameters,
         iteration=iteration,
-        parent_ids=parent_ids or [],
+        parent_id=parent_id,
         intuition=intuition,
+        optimization_rationale=optimization_rationale,
         improvement_targets=improvement_targets or [],
     )
     _storage["alphas"][alpha.id] = alpha
@@ -96,6 +98,8 @@ def store_feedback(
     concerns: list,
     actionable_suggestions: list,
     can_proceed: bool,
+    expected_match_score: float = 0.5,
+    expected_match_reason: str = "",
 ) -> CriticFeedback:
     """存储Critic反馈"""
     feedback = CriticFeedback(
@@ -107,9 +111,62 @@ def store_feedback(
         concerns=concerns,
         actionable_suggestions=actionable_suggestions,
         can_proceed=can_proceed,
+        expected_match_score=expected_match_score,
+        expected_match_reason=expected_match_reason,
     )
     _storage["feedbacks"][feedback.id] = feedback
     return feedback
+
+
+def delete_factor(alpha_id: str) -> bool:
+    """
+    删除指定因子及其关联数据。
+
+    Args:
+        alpha_id: 要删除的因子ID
+
+    Returns:
+        是否成功删除
+    """
+    if alpha_id not in _storage["alphas"]:
+        return False
+
+    # 删除因子本身
+    del _storage["alphas"][alpha_id]
+
+    # 删除关联的评估结果
+    if alpha_id in _storage["evaluations"]:
+        del _storage["evaluations"][alpha_id]
+
+    # 删除关联的反馈（只删除alpha_id匹配的部分）
+    feedbacks_to_delete = [
+        fid for fid, fb in _storage["feedbacks"].items()
+        if fb.alpha_id == alpha_id
+    ]
+    for fid in feedbacks_to_delete:
+        del _storage["feedbacks"][fid]
+
+    # 从discovered_alphas中移除
+    if alpha_id in _storage["discovered_alphas"]:
+        _storage["discovered_alphas"].remove(alpha_id)
+
+    return True
+
+
+def delete_factors(alpha_ids: list[str]) -> dict[str, bool]:
+    """
+    批量删除因子。
+
+    Args:
+        alpha_ids: 要删除的因子ID列表
+
+    Returns:
+        每个ID的删除结果
+    """
+    results = {}
+    for alpha_id in alpha_ids:
+        results[alpha_id] = delete_factor(alpha_id)
+    return results
 
 
 def list_factors() -> list[AlphaExpression]:
@@ -207,8 +264,9 @@ def save_alpha(
     description: str,
     parameters: dict,
     iteration: int,
-    parent_ids: list | None = None,
+    parent_id: str | None = None,
     intuition: str = "",
+    optimization_rationale: str = "",
     improvement_targets: list | None = None,
 ) -> str:
     """
@@ -223,8 +281,9 @@ def save_alpha(
         description=description,
         parameters=parameters,
         iteration=iteration,
-        parent_ids=parent_ids,
+        parent_id=parent_id,
         intuition=intuition,
+        optimization_rationale=optimization_rationale,
         improvement_targets=improvement_targets,
     )
     return alpha.id
@@ -254,6 +313,8 @@ def save_critic_feedback(
     concerns: list,
     actionable_suggestions: list,
     can_proceed: bool,
+    expected_match_score: float = 0.5,
+    expected_match_reason: str = "",
 ) -> str:
     """
     保存Critic的反馈。
@@ -269,6 +330,8 @@ def save_critic_feedback(
         concerns=concerns,
         actionable_suggestions=actionable_suggestions,
         can_proceed=can_proceed,
+        expected_match_score=expected_match_score,
+        expected_match_reason=expected_match_reason,
     )
     return feedback.id
 
@@ -441,3 +504,46 @@ def finalize_session(session_id: str, final_candidates: list[str]) -> str:
     """
     finalize_mining_session(session_id, final_candidates)
     return "success"
+
+
+@tool
+def delete_factor(alpha_id: str) -> str:
+    """
+    删除指定因子及其所有关联数据（评估结果、反馈记录）。
+
+    此操作需要谨慎，只有当因子确定无价值时才应调用。
+
+    Args:
+        alpha_id: 要删除的因子ID
+
+    Returns:
+        删除结果描述
+    """
+    success = delete_factor(alpha_id)
+    if success:
+        return f"Factor {alpha_id} and associated data deleted successfully"
+    else:
+        return f"Factor {alpha_id} not found, no deletion performed"
+
+
+@tool
+def get_factor_metrics(alpha_id: str) -> dict | None:
+    """
+    获取因子的评估指标摘要。
+
+    Returns:
+        包含评估指标的字典，或None（如果不存在）
+    """
+    eval_result = get_evaluation_by_alpha_id(alpha_id)
+    if eval_result is None:
+        return None
+
+    return {
+        "alpha_id": alpha_id,
+        "ic_mean": eval_result.ic_mean,
+        "ic_std": eval_result.ic_std,
+        "ir": eval_result.ir,
+        "sharpe": eval_result.sharpe,
+        "max_drawdown": eval_result.max_drawdown,
+        "turnover": eval_result.turnover,
+    }

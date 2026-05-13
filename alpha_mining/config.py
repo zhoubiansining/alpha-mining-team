@@ -33,8 +33,8 @@ class ModelConfig(BaseModel):
 class IterationConfig(BaseModel):
     """迭代配置"""
     max_iterations: int = Field(
-        default=10,
-        description="最大迭代轮次"
+        default=20,
+        description="最大迭代轮次（每轮基于单个因子进行优化）"
     )
     min_proposals_per_iteration: int = Field(
         default=3,
@@ -106,7 +106,7 @@ class AlphaMiningConfig(BaseModel):
                 critic_model=os.getenv("CRITIC_MODEL", "gpt-4o"),
             ),
             iteration=IterationConfig(
-                max_iterations=int(os.getenv("MAX_ITERATIONS", "10")),
+                max_iterations=int(os.getenv("MAX_ITERATIONS", "20")),
                 min_proposals_per_iteration=int(os.getenv("MIN_PROPOSALS", "3")),
                 max_proposals_per_iteration=int(os.getenv("MAX_PROPOSALS", "5")),
             ),

@@ -6,7 +6,7 @@ import asyncio
 from alpha_mining.workflow import (
     MiningState,
     build_mining_workflow,
-    _build_factor_library_summary,
+    _build_discovered_factors_summary,
     _build_proposals_summary,
 )
 from alpha_mining.tools.storage_tools import (
@@ -92,7 +92,10 @@ class TestWorkflow:
             "leader_decision": None,
             "should_continue": True,
             "optimization_direction": None,
-            "context_factors": [],
+            "selected_factor_id": None,
+            "reasoning_for_selection": None,
+            "suggestions_to_proposer": [],
+            "factors_to_remove": [],
             "discovered_factors": [],
             "is_complete": False,
             "final_candidates": [],
@@ -140,7 +143,7 @@ class TestHelperFunctions:
     def test_build_factor_library_summary_empty(self):
         """Test building summary for empty library."""
         reset_storage()
-        summary = _build_factor_library_summary()
+        summary = _build_discovered_factors_summary()
         assert "No discovered" in summary
 
     def test_build_factor_library_summary_with_factors(self):
@@ -166,7 +169,7 @@ class TestHelperFunctions:
             },
         )
 
-        summary = _build_factor_library_summary()
+        summary = _build_discovered_factors_summary()
         assert "Test Alpha" in summary
         assert "IC=" in summary
 
