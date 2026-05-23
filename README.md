@@ -70,6 +70,8 @@ export OPENAI_API_BASE="https://api.openai.com/v1"  # 或其他兼容API
 export LEADER_MODEL="gpt-4o"
 export PROPOSER_MODEL="gpt-4o-mini"
 export CRITIC_MODEL="gpt-4o"
+export EVALUATOR_ENDPOINT="http://localhost:18000/evaluate"
+export EVALUATOR_TIMEOUT=300
 ```
 
 ### 运行示例
@@ -117,6 +119,58 @@ print(f"发现 {result['discovered_count']} 个新因子")
 pytest tests/ -v
 ```
 
+### 真实LLM端到端Smoke Test
+
+配置好真实 OpenAI Compatible API 后，可以一键启动 `data_api`、`back_test` 并运行一轮智能体挖掘：
+
+```bash
+export OPENAI_API_KEY="your-api-key"
+
+./scripts/run_real_smoke.sh momentum_20d
+```
+
+脚本内已提供默认模型配置；如果需要覆盖，可以在命令前额外设置 `OPENAI_API_BASE`、`LEADER_MODEL`、`PROPOSER_MODEL`、`CRITIC_MODEL`。
+
+为避免和本机已有服务冲突，脚本默认使用 `BACK_TEST_PORT=18000` 和 `DATA_API_PORT=18001`。如需改回旧端口，可显式设置：
+
+```bash
+BACK_TEST_PORT=8000 DATA_API_PORT=8001 ./scripts/run_real_smoke.sh momentum_20d
+```
+
+常用调试参数：
+
+```bash
+MAX_ITERATIONS=1 UNIVERSE=HS300 START_DATE=2023-01-01 END_DATE=2023-03-31 ./scripts/run_real_smoke.sh mean_reversion_20d
+USE_SERIAL=1 ./scripts/run_real_smoke.sh momentum_20d
+```
+
+日志调试参数：
+
+```bash
+# 默认：INFO级别，并打印prompt/response摘要
+ALPHA_MINING_LOG_LEVEL=INFO ALPHA_MINING_DEBUG_PROMPTS=1 ./scripts/run_real_smoke.sh momentum_20d
+
+# 关闭prompt/response，只看节点状态和关键指标
+ALPHA_MINING_DEBUG_PROMPTS=0 ./scripts/run_real_smoke.sh momentum_20d
+```
+
+如果你已经手动启动服务，也可以只运行 agent pipeline：
+
+```bash
+python scripts/real_llm_smoke_test.py --baseline momentum_20d --max-iterations 1 --serial
+```
+
+### Data API真实数据检查
+
+如果怀疑回测一直落到 shadow 数据，可以先单独检查 `data_api` 是否返回真实日频行情：
+
+```bash
+# 先启动 data_api，例如：DATA_API_PORT=18001 python -m data_api.main
+python scripts/check_data_api_real_data.py --base-url http://127.0.0.1:18001 --universe HS300 --start-date 2023-01-01 --end-date 2023-03-31
+```
+
+该脚本直接请求 `data_api /universe` 和 `data_api /bars/daily`，不经过 `back_test.data_loader`，因此不会被 shadow fallback 掩盖。
+
 ## 因子代码格式
 
 所有因子必须实现 `AlphaFactorTemplate` 接口：
@@ -146,7 +200,23 @@ class MyAlpha:
 
 ## 对接回测框架
 
-详见 `../docs/integration_spec.md`，包含HTTP接口规范、错误码定义和合规检查要求。
+`alpha_mining.tools.eval_tools.call_evaluator` 会通过 HTTP 调用 `back_test` 服务的 `/evaluate` 接口。详见 `../docs/integration_spec.md`，包含HTTP接口规范、错误码定义和合规检查要求。
+
+## 基线因子库
+
+`tests/base_factors.py` 提供了可复用的日频基础因子库，用于 smoke test 和完整联调。
+
+```python
+from tests.base_factors import (
+    get_base_factor_library,
+    get_combined_base_factor_library,
+)
+
+baseline_factors = get_base_factor_library("momentum_20d")
+all_baselines = get_combined_base_factor_library()
+```
+
+每个 helper 返回的因子都使用统一 Python class 格式，且可以直接传给 `run_mining(..., baseline_factor_library=baseline_factors)`。
 
 ## 主要接口
 
@@ -154,10 +224,15 @@ class MyAlpha:
 
 ```python
 result = call_evaluator.invoke({
-    "alpha_code": "(close - close.rolling(20).mean()) / close.rolling(20).std()",
+    "alpha_code": "class MyAlpha: ...",
     "alpha_description": "Z-score均值回归因子",
     "parameters": {"window": 20},
-    "eval_config": {"universe": "A-share", ...}
+    "eval_config": {
+        "alpha_id": "alpha-1",
+        "universe": "HS300",
+        "start_date": "2023-01-01",
+        "end_date": "2023-06-30",
+    }
 })
 ```
 

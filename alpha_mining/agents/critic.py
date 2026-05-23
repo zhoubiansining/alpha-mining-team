@@ -19,12 +19,16 @@ from alpha_mining.tools.storage_tools import (
 )
 
 
-def get_default_llm():
+def get_default_llm(
+    model_name: str | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
+):
     """获取默认的LLM实例，配置OpenAI兼容API"""
     return ChatOpenAI(
-        model=os.getenv("CRITIC_MODEL", "gpt-4o"),
-        api_key=os.getenv("OPENAI_API_KEY", "dummy"),
-        base_url=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1"),
+        model=model_name or os.getenv("CRITIC_MODEL", "gpt-4o"),
+        api_key=api_key or os.getenv("OPENAI_API_KEY", "dummy"),
+        base_url=api_base or os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1"),
         temperature=0.0,
     )
 
@@ -48,13 +52,11 @@ def build_critic_agent(
         SubAgent配置
     """
     if llm is None:
-        llm = get_default_llm()
-        if model_name:
-            llm.model_name = model_name
-        if api_base:
-            llm.base_url = api_base
-        if api_key:
-            llm.api_key = api_key
+        llm = get_default_llm(
+            model_name=model_name,
+            api_base=api_base,
+            api_key=api_key,
+        )
 
     return {
         "name": "critic",

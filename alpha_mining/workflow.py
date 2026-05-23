@@ -3,9 +3,11 @@
 import asyncio
 import json
 import logging
+import os
 from typing import TypedDict, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 
 from alpha_mining.config import AlphaMiningConfig
@@ -25,7 +27,7 @@ from alpha_mining.tools.storage_tools import (
     set_baseline_factor_library,
     add_discovered_alpha,
     get_baseline_factor_library,
-    delete_factor,
+    delete_factor_record,
 )
 from alpha_mining.schemas.history import IterationHistory
 from alpha_mining.schemas.alpha import AlphaExpression
@@ -39,6 +41,14 @@ from alpha_mining.prompts.critic_prompts import CRITIC_USER_PROMPT
 
 
 logger = logging.getLogger(__name__)
+
+
+def _log_debug_payload(title: str, content: str, limit: int = 1200) -> None:
+    """Log a compact snippet of prompt/response content when enabled."""
+    if os.getenv("ALPHA_MINING_DEBUG_PROMPTS", "0") not in {"1", "true", "True"}:
+        return
+    snippet = content if len(content) <= limit else content[:limit] + "...<truncated>"
+    logger.info("%s\n%s", title, snippet)
 
 # Thread pool for parallel LLM calls
 _executor = ThreadPoolExecutor(max_workers=10)
@@ -92,6 +102,70 @@ def _build_baseline_summary(baseline: list[dict]) -> str:
     return "\n".join(summary_parts)
 
 
+async def _evaluate_baseline_factor_library(
+    baseline: list[dict],
+    eval_config: dict,
+) -> list[dict]:
+    """Pre-evaluate baseline factors before the first Leader decision."""
+    if not baseline:
+        return []
+
+    logger.info("Pre-evaluating %d baseline factors", len(baseline))
+    evaluated_baseline: list[dict] = []
+
+    async def _evaluate_one(index: int, factor: dict) -> dict:
+        if factor.get("evaluation"):
+            logger.info("Baseline factor already has evaluation | id=%s | name=%s", factor.get("id"), factor.get("name"))
+            return factor
+
+        factor_id = factor.get("id", f"baseline-{index}")
+        logger.info("Pre-evaluating baseline factor | id=%s | name=%s", factor_id, factor.get("name", ""))
+        result = await _evaluate_alpha_async(
+            {
+                "id": factor_id,
+                "name": factor.get("name", ""),
+                "description": factor.get("description", ""),
+                "code": factor.get("code", ""),
+                "parameters": factor.get("parameters", {}),
+            },
+            {
+                **eval_config,
+                "alpha_id": factor_id,
+            },
+        )
+        payload = result.get("result", {})
+        if payload.get("status") == "success":
+            factor = {
+                **factor,
+                "evaluation": payload.get("metrics", {}),
+            }
+            logger.info(
+                "Baseline evaluation success | id=%s | ic_mean=%.4f | sharpe=%.4f",
+                factor_id,
+                factor["evaluation"].get("ic_mean", 0.0),
+                factor["evaluation"].get("sharpe", 0.0),
+            )
+        else:
+            factor = {
+                **factor,
+                "evaluation": factor.get("evaluation", {}),
+                "baseline_evaluation_error": payload.get("error_message"),
+                "baseline_evaluation_error_code": payload.get("error_code"),
+            }
+            logger.warning(
+                "Baseline evaluation failed | id=%s | error_code=%s | message=%s",
+                factor_id,
+                payload.get("error_code"),
+                payload.get("error_message"),
+            )
+        return factor
+
+    tasks = [_evaluate_one(index, factor) for index, factor in enumerate(baseline)]
+    results = await asyncio.gather(*tasks)
+    evaluated_baseline.extend(results)
+    return evaluated_baseline
+
+
 def _build_discovered_factors_summary() -> str:
     """构建已发现因子摘要"""
     factors = list_factors()
@@ -116,10 +190,9 @@ def _build_iteration_context(state: MiningState) -> dict:
     """构建迭代上下文"""
     baseline = state.get("baseline_factor_library", [])
     discovered = list_factors()
-    iteration = state["iteration"]
 
-    # 计算已发现因子数量
-    discovered_count = len([f for f in discovered if f.iteration < iteration])
+    # 已发现因子以存储层为准；不要依赖轮次过滤，否则本轮刚评估成功的因子在下一次Leader决策中会被漏掉。
+    discovered_count = len(discovered)
 
     # 获取最近的反馈
     recent_feedbacks = []
@@ -162,6 +235,50 @@ def _build_iteration_context(state: MiningState) -> dict:
     }
 
 
+def _find_factor_reference(reference: str | None, baseline: list[dict]) -> dict | None:
+    """Find a factor by id first, then by name, across baseline and discovered factors."""
+    if not reference:
+        return None
+
+    normalized_reference = reference.strip().lower()
+
+    for factor in baseline:
+        if factor.get("id") == reference or factor.get("name", "").strip().lower() == normalized_reference:
+            return factor
+
+    for factor in list_factors():
+        if factor.id == reference or factor.name.strip().lower() == normalized_reference:
+            eval_result = get_evaluation_by_alpha_id(factor.id)
+            return {
+                "id": factor.id,
+                "name": factor.name,
+                "description": factor.description,
+                "code": factor.code,
+                "evaluation": eval_result.to_summary() if eval_result else {},
+            }
+
+    return None
+
+
+def _sync_discovered_state(state: MiningState) -> None:
+    """Synchronize state-level discovered IDs from storage."""
+    stored_ids = [factor.id for factor in list_factors()]
+    merged = list(dict.fromkeys([*state.get("discovered_factors", []), *stored_ids]))
+    state["discovered_factors"] = merged
+
+
+def _advance_iteration(state: MiningState) -> MiningState:
+    """Advance to the next Leader planning round after Critic finishes."""
+    _sync_discovered_state(state)
+    state["iteration"] += 1
+    logger.info(
+        "Iteration advanced | next_iteration=%d | discovered=%d",
+        state["iteration"],
+        len(state.get("discovered_factors", [])),
+    )
+    return state
+
+
 def _build_proposals_summary(proposals: list[dict]) -> str:
     """构建提案摘要"""
     if not proposals:
@@ -174,6 +291,45 @@ def _build_proposals_summary(proposals: list[dict]) -> str:
         )
 
     return "\n".join(summary_parts)
+
+
+def _extract_response_text(response: Any) -> str:
+    """Extract assistant text from LangGraph/LangChain response shapes."""
+    if response is None:
+        return ""
+    if isinstance(response, str):
+        return response
+    if hasattr(response, "content"):
+        content = response.content
+        if isinstance(content, str):
+            return content
+        return json.dumps(content, ensure_ascii=False)
+    if isinstance(response, dict):
+        messages = response.get("messages")
+        if messages:
+            return _extract_response_text(messages[-1])
+        for key in ("output", "content", "text"):
+            if key in response:
+                return _extract_response_text(response[key])
+        return json.dumps(response, ensure_ascii=False)
+    return str(response)
+
+
+def _invoke_deep_agent_text(agent: Any, prompt: str) -> str:
+    """Invoke a compiled deepagents graph and return final assistant text."""
+    response = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+    return _extract_response_text(response)
+
+
+def _invoke_subagent_config_text(agent_config: dict, prompt: str) -> str:
+    """Invoke a SubAgent config's underlying chat model directly."""
+    model = agent_config["model"]
+    messages = [
+        SystemMessage(content=agent_config.get("system_prompt", "")),
+        HumanMessage(content=prompt),
+    ]
+    response = model.invoke(messages)
+    return _extract_response_text(response)
 
 
 async def _call_leader_agent(leader_prompt: str, config: dict) -> dict:
@@ -190,13 +346,21 @@ async def _call_leader_agent(leader_prompt: str, config: dict) -> dict:
 def _sync_call_leader(leader_prompt: str, config: dict) -> dict:
     """同步调用Leader Agent"""
     try:
+        logger.info(
+            "Calling Leader agent | model=%s | prompt_chars=%d",
+            config.get("leader_model", "gpt-4o"),
+            len(leader_prompt),
+        )
+        _log_debug_payload("[Leader Prompt]", leader_prompt)
         agent = build_leader_agent(
             model_name=config.get("leader_model", "gpt-4o"),
             api_base=config.get("api_base"),
             api_key=config.get("api_key"),
         )
-        response = agent.invoke(leader_prompt)
-        return parse_leader_decision(response)
+        response_text = _invoke_deep_agent_text(agent, leader_prompt)
+        logger.info("Leader agent returned %d chars", len(response_text))
+        _log_debug_payload("[Leader Response]", response_text)
+        return parse_leader_decision(response_text)
     except Exception as e:
         logger.error(f"Leader agent error: {e}")
         return {
@@ -225,13 +389,23 @@ async def _call_proposer_agent(
 def _sync_call_proposer(proposer_prompt: str, config: dict, n_proposals: int) -> list[dict]:
     """同步调用Proposer Agent"""
     try:
+        logger.info(
+            "Calling Proposer agent | model=%s | target_proposals=%d | prompt_chars=%d",
+            config.get("proposer_model", "gpt-4o-mini"),
+            n_proposals,
+            len(proposer_prompt),
+        )
+        _log_debug_payload("[Proposer Prompt]", proposer_prompt)
         agent = build_proposer_agent(
             model_name=config.get("proposer_model", "gpt-4o-mini"),
             api_base=config.get("api_base"),
             api_key=config.get("api_key"),
         )
-        response = agent.invoke(proposer_prompt)
-        alphas = parse_alpha_proposals(response)
+        response_text = _invoke_subagent_config_text(agent, proposer_prompt)
+        logger.info("Proposer agent returned %d chars", len(response_text))
+        _log_debug_payload("[Proposer Response]", response_text)
+        alphas = parse_alpha_proposals(response_text)
+        logger.info("Proposer parsed %d alpha candidates", len(alphas))
         return alphas[:n_proposals]  # 限制数量
     except Exception as e:
         logger.error(f"Proposer agent error: {e}")
@@ -267,6 +441,12 @@ def _sync_call_critic(
 ) -> dict:
     """同步调用Critic Agent"""
     try:
+        logger.info(
+            "Calling Critic agent | model=%s | alpha_id=%s | prompt_chars=%d",
+            config.get("critic_model", "gpt-4o"),
+            alpha.get("id", ""),
+            len(optimization_direction or "") + len(json.dumps(evaluation, ensure_ascii=False)) + len(alpha.get("name", "")),
+        )
         agent = build_critic_agent(
             model_name=config.get("critic_model", "gpt-4o"),
             api_base=config.get("api_base"),
@@ -288,7 +468,11 @@ def _sync_call_critic(
             optimization_direction=optimization_direction or "General alpha improvement",
         )
 
-        response = agent.invoke(user_prompt)
+        _log_debug_payload(f"[Critic Prompt | alpha_id={alpha.get('id', '')}]", user_prompt)
+
+        response = _invoke_subagent_config_text(agent, user_prompt)
+        logger.info("Critic agent returned %d chars for alpha_id=%s", len(response), alpha.get("id", ""))
+        _log_debug_payload(f"[Critic Response | alpha_id={alpha.get('id', '')}]", response)
         return parse_critic_feedback(
             response,
             alpha_id=alpha.get("id", ""),
@@ -312,11 +496,19 @@ def leader_node(state: MiningState) -> MiningState:
     Leader决策节点。
     使用真实的Leader Agent进行决策。
     """
-    logger.info(f"Leader node - Iteration {state['iteration']}")
+    logger.info(
+        "Leader node start | session=%s | iteration=%d | baseline=%d | discovered=%d | proposals=%d",
+        state.get("session_id", ""),
+        state["iteration"],
+        len(state.get("baseline_factor_library", [])),
+        len(state.get("discovered_factors", [])),
+        len(state.get("current_proposals", [])),
+    )
 
     iteration = state["iteration"]
     config = state["config"]
     baseline = state.get("baseline_factor_library", [])
+    _sync_discovered_state(state)
 
     # 检查是否达到最大迭代次数
     max_iterations = config.get("max_iterations", 20)
@@ -361,7 +553,21 @@ def leader_node(state: MiningState) -> MiningState:
     state["should_continue"] = decision.get("should_continue", False)
     state["optimization_direction"] = decision.get("optimization_direction")
     state["leader_decision"] = decision
-    state["selected_factor_id"] = decision.get("selected_factor_id")
+    selected_reference = decision.get("selected_factor_id")
+    selected_factor = _find_factor_reference(selected_reference, baseline)
+    if selected_reference and selected_factor:
+        state["selected_factor_id"] = selected_factor.get("id")
+        if selected_reference != state["selected_factor_id"]:
+            logger.info(
+                "Normalized Leader selected factor reference | raw=%s | resolved_id=%s | name=%s",
+                selected_reference,
+                state["selected_factor_id"],
+                selected_factor.get("name"),
+            )
+    else:
+        state["selected_factor_id"] = selected_reference
+        if selected_reference:
+            logger.warning("Leader selected factor could not be resolved | raw=%s", selected_reference)
     state["reasoning_for_selection"] = decision.get("reasoning_for_selection", "")
     state["suggestions_to_proposer"] = decision.get("suggestions_to_proposer", [])
     state["factors_to_remove"] = decision.get("factors_to_remove", [])
@@ -369,10 +575,12 @@ def leader_node(state: MiningState) -> MiningState:
     # 处理因子库管理
     if state["factors_to_remove"]:
         for factor_id in state["factors_to_remove"]:
-            delete_factor(factor_id)
-            if factor_id in state["discovered_factors"]:
-                state["discovered_factors"].remove(factor_id)
-        logger.info(f"Removed {len(state['factors_to_remove'])} factors from library")
+            factor = _find_factor_reference(factor_id, baseline)
+            resolved_id = factor.get("id") if factor else factor_id
+            delete_factor_record(resolved_id)
+            if resolved_id in state["discovered_factors"]:
+                state["discovered_factors"].remove(resolved_id)
+        logger.info("Removed %d factors from library: %s", len(state["factors_to_remove"]), state["factors_to_remove"])
 
     # 如果是终止决策
     if not state["should_continue"]:
@@ -381,7 +589,13 @@ def leader_node(state: MiningState) -> MiningState:
         state["leader_decision"]["final_candidates"] = final_candidates
         state["final_candidates"] = final_candidates
 
-    logger.info(f"Leader decision: continue={state['should_continue']}, direction={state['optimization_direction']}")
+    logger.info(
+        "Leader decision | continue=%s | selected_factor=%s | remove=%s | final_candidates=%s",
+        state["should_continue"],
+        state.get("selected_factor_id"),
+        state.get("factors_to_remove"),
+        state.get("final_candidates") if not state["should_continue"] else [],
+    )
     return state
 
 
@@ -390,7 +604,13 @@ def proposer_node(state: MiningState) -> MiningState:
     Proposer生成节点。
     使用真实的Proposer Agent生成alpha候选。
     """
-    logger.info(f"Proposer node - Iteration {state['iteration']}")
+    logger.info(
+        "Proposer node start | session=%s | iteration=%d | selected_factor=%s | suggestions=%d",
+        state.get("session_id", ""),
+        state["iteration"],
+        state.get("selected_factor_id"),
+        len(state.get("suggestions_to_proposer", [])),
+    )
 
     config = state["config"]
     baseline = state.get("baseline_factor_library", [])
@@ -399,23 +619,7 @@ def proposer_node(state: MiningState) -> MiningState:
     # 获取要优化的基线因子
     selected_factor = None
     if state.get("selected_factor_id"):
-        for f in baseline:
-            if f.get("id") == state["selected_factor_id"]:
-                selected_factor = f
-                break
-        if not selected_factor:
-            # 在已发现因子中查找
-            for f in list_factors():
-                if f.id == state["selected_factor_id"]:
-                    eval_result = get_evaluation_by_alpha_id(f.id)
-                    selected_factor = {
-                        "id": f.id,
-                        "name": f.name,
-                        "description": f.description,
-                        "code": f.code,
-                        "evaluation": eval_result.to_summary() if eval_result else {},
-                    }
-                    break
+        selected_factor = _find_factor_reference(state.get("selected_factor_id"), baseline)
 
     # 构建优化方向和反馈
     optimization_direction = state.get("optimization_direction", "Improve alpha factors")
@@ -476,7 +680,11 @@ def proposer_node(state: MiningState) -> MiningState:
         state["current_proposals"].append(alpha)
         state["pending_evaluations"].append(alpha_obj.id)
 
-    logger.info(f"Proposer generated {len(state['current_proposals'])} alphas")
+    logger.info(
+        "Proposer generated %d alphas | ids=%s",
+        len(state["current_proposals"]),
+        [alpha.get("id") for alpha in state["current_proposals"]],
+    )
     return state
 
 
@@ -502,7 +710,12 @@ def evaluator_node(state: MiningState) -> MiningState:
     Evaluator节点。
     调用评估接口获取alpha的量化指标。
     """
-    logger.info(f"Evaluator node - Iteration {state['iteration']}, evaluating {len(state['current_proposals'])} alphas")
+    logger.info(
+        "Evaluator node start | session=%s | iteration=%d | proposals=%d",
+        state.get("session_id", ""),
+        state["iteration"],
+        len(state["current_proposals"]),
+    )
 
     max_retries = state["config"].get("max_proposer_retries", 3)
 
@@ -516,7 +729,10 @@ def evaluator_node(state: MiningState) -> MiningState:
             "alpha_description": alpha.get("description", ""),
             "alpha_code": alpha.get("code", ""),
             "parameters": alpha.get("parameters", {}),
-            "eval_config": state["config"].get("eval_config", {}),
+            "eval_config": {
+                **state["config"].get("eval_config", {}),
+                "alpha_id": alpha_id,
+            },
         })
 
         status = result.get("status")
@@ -527,6 +743,7 @@ def evaluator_node(state: MiningState) -> MiningState:
             metrics = result.get("metrics", {})
             store_evaluation(alpha_id, metrics)
             alpha["evaluation"] = metrics
+            logger.info("Evaluator success | alpha_id=%s | ic_mean=%.4f | sharpe=%.4f", alpha_id, metrics.get("ic_mean", 0.0), metrics.get("sharpe", 0.0))
 
             # 标记为已发现
             if alpha_id not in state.get("discovered_factors", []):
@@ -546,6 +763,12 @@ def evaluator_node(state: MiningState) -> MiningState:
                     logger.warning(f"Alpha {alpha_id} failed compliance after {max_retries} retries")
             else:
                 alpha["needs_fix"] = False
+            logger.warning(
+                "Evaluator error | alpha_id=%s | error_code=%s | message=%s",
+                alpha_id,
+                alpha.get("error_code"),
+                alpha.get("error_message"),
+            )
 
     return state
 
@@ -568,7 +791,10 @@ def _sync_evaluate_alpha(alpha: dict, eval_config: dict) -> dict:
             "alpha_description": alpha.get("description", ""),
             "alpha_code": alpha.get("code", ""),
             "parameters": alpha.get("parameters", {}),
-            "eval_config": eval_config,
+            "eval_config": {
+                **eval_config,
+                "alpha_id": alpha.get("id"),
+            },
         })
         return {
             "alpha_id": alpha.get("id"),
@@ -586,7 +812,12 @@ async def evaluator_node_parallel(state: MiningState) -> MiningState:
     Evaluator节点（并行版本）。
     并行调用评估接口获取alpha的量化指标。
     """
-    logger.info(f"Evaluator node (parallel) - Iteration {state['iteration']}, evaluating {len(state['current_proposals'])} alphas")
+    logger.info(
+        "Evaluator node (parallel) start | session=%s | iteration=%d | proposals=%d",
+        state.get("session_id", ""),
+        state["iteration"],
+        len(state["current_proposals"]),
+    )
 
     if not state["current_proposals"]:
         return state
@@ -614,6 +845,7 @@ async def evaluator_node_parallel(state: MiningState) -> MiningState:
             metrics = result.get("metrics", {})
             store_evaluation(alpha_id, metrics)
             alpha["evaluation"] = metrics
+            logger.info("Evaluator success | alpha_id=%s | ic_mean=%.4f | sharpe=%.4f", alpha_id, metrics.get("ic_mean", 0.0), metrics.get("sharpe", 0.0))
 
             if alpha_id not in state.get("discovered_factors", []):
                 state.setdefault("discovered_factors", []).append(alpha_id)
@@ -630,6 +862,12 @@ async def evaluator_node_parallel(state: MiningState) -> MiningState:
                     alpha["evaluator_status"] = "skipped"
             else:
                 alpha["needs_fix"] = False
+            logger.warning(
+                "Evaluator error | alpha_id=%s | error_code=%s | message=%s",
+                alpha_id,
+                alpha.get("error_code"),
+                alpha.get("error_message"),
+            )
 
     return state
 
@@ -639,7 +877,12 @@ async def critic_node_parallel(state: MiningState) -> MiningState:
     Critic节点（并行版本）。
     并行调用Critic Agent对每个alpha进行评估。
     """
-    logger.info(f"Critic node (parallel) - Iteration {state['iteration']}, critiquing {len(state['current_proposals'])} alphas")
+    logger.info(
+        "Critic node (parallel) start | session=%s | iteration=%d | proposals=%d",
+        state.get("session_id", ""),
+        state["iteration"],
+        len(state["current_proposals"]),
+    )
 
     if not state["current_proposals"]:
         return state
@@ -684,8 +927,14 @@ async def critic_node_parallel(state: MiningState) -> MiningState:
         )
 
         alpha["feedback"] = feedback
+        logger.info(
+            "Critic feedback stored | alpha_id=%s | can_proceed=%s | expected_match_score=%.3f",
+            alpha_id,
+            feedback.get("can_proceed"),
+            feedback.get("expected_match_score", 0.0),
+        )
 
-    return state
+    return _advance_iteration(state)
 
 
 def critic_node(state: MiningState) -> MiningState:
@@ -703,7 +952,12 @@ def critic_node(state: MiningState) -> MiningState:
 
 def _critic_node_sync(state: MiningState) -> MiningState:
     """Critic节点同步实现"""
-    logger.info(f"Critic node (sync) - Iteration {state['iteration']}")
+    logger.info(
+        "Critic node (sync) start | session=%s | iteration=%d | proposals=%d",
+        state.get("session_id", ""),
+        state["iteration"],
+        len(state["current_proposals"]),
+    )
 
     baseline = state.get("baseline_factor_library", [])
     optimization_direction = state.get("optimization_direction", "")
@@ -755,8 +1009,14 @@ def _critic_node_sync(state: MiningState) -> MiningState:
         )
 
         alpha["feedback"] = feedback
+        logger.info(
+            "Critic feedback stored | alpha_id=%s | can_proceed=%s | expected_match_score=%.3f",
+            alpha_id,
+            feedback.get("can_proceed"),
+            feedback.get("expected_match_score", 0.0),
+        )
 
-    return state
+    return _advance_iteration(state)
 
 
 def compliance_fix_node(state: MiningState) -> MiningState:
@@ -764,14 +1024,19 @@ def compliance_fix_node(state: MiningState) -> MiningState:
     合规修复节点。
     对Evaluator判定为不合规的alpha，调用Proposer重新生成。
     """
-    logger.info(f"Compliance fix node - Iteration {state['iteration']}")
+    logger.info(
+        "Compliance fix node start | session=%s | iteration=%d | needs_fix=%d",
+        state.get("session_id", ""),
+        state["iteration"],
+        len([a for a in state["current_proposals"] if a.get("needs_fix")]),
+    )
 
     # 查找需要修复的alpha
     needs_fix = [a for a in state["current_proposals"] if a.get("needs_fix")]
     if not needs_fix:
         return state
 
-    logger.info(f"Fixing {len(needs_fix)} non-compliant alphas")
+    logger.info("Fixing %d non-compliant alphas: %s", len(needs_fix), [a.get("id") for a in needs_fix])
 
     for alpha in needs_fix:
         error_msg = alpha.get("error_message", "Unknown compliance error")
@@ -946,8 +1211,16 @@ async def run_mining(
     # 重置存储
     reset_storage()
 
-    # 设置基线因子库
+    # 先对基线因子进行预回测，确保Leader拥有真实初始指标
     baseline = baseline_factor_library or []
+    eval_config = {
+        "symbols": config.target_assets,
+        "start_date": config.eval_period["start_date"],
+        "end_date": config.eval_period["end_date"],
+    }
+    baseline = await _evaluate_baseline_factor_library(baseline, eval_config)
+
+    # 设置基线因子库
     set_baseline_factor_library(baseline)
 
     # 创建会话
@@ -977,9 +1250,7 @@ async def run_mining(
             "max_proposals_per_iteration": config.iteration.max_proposals_per_iteration,
             "max_proposer_retries": 3,
             "eval_config": {
-                "symbols": config.target_assets,
-                "start_date": config.eval_period["start_date"],
-                "end_date": config.eval_period["end_date"],
+                **eval_config,
             },
         },
         "baseline_factor_library": baseline,
@@ -1030,6 +1301,8 @@ async def run_mining(
                 "evaluation": eval_result.to_summary() if eval_result else {},
             })
 
+    leader_decision = final_state.get("leader_decision") or {}
+
     return {
         "session_id": session_id,
         "iterations": final_state.get("iteration", 0),
@@ -1037,5 +1310,5 @@ async def run_mining(
         "discovered_count": len(final_state.get("discovered_factors", [])),
         "factors": all_factors,
         "final_candidates": final_state.get("final_candidates", []),
-        "termination_reason": final_state.get("leader_decision", {}).get("termination_reason"),
+        "termination_reason": leader_decision.get("termination_reason"),
     }

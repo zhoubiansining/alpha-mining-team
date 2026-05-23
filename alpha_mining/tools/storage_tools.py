@@ -118,7 +118,7 @@ def store_feedback(
     return feedback
 
 
-def delete_factor(alpha_id: str) -> bool:
+def delete_factor_record(alpha_id: str) -> bool:
     """
     删除指定因子及其关联数据。
 
@@ -165,7 +165,7 @@ def delete_factors(alpha_ids: list[str]) -> dict[str, bool]:
     """
     results = {}
     for alpha_id in alpha_ids:
-        results[alpha_id] = delete_factor(alpha_id)
+        results[alpha_id] = delete_factor_record(alpha_id)
     return results
 
 
@@ -519,7 +519,7 @@ def delete_factor(alpha_id: str) -> str:
     Returns:
         删除结果描述
     """
-    success = delete_factor(alpha_id)
+    success = delete_factor_record(alpha_id)
     if success:
         return f"Factor {alpha_id} and associated data deleted successfully"
     else:
