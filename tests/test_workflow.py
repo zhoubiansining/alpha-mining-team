@@ -6,7 +6,9 @@ import asyncio
 from alpha_mining.workflow import (
     MiningState,
     build_mining_workflow,
-    _build_factor_library_summary,
+    run_mining,
+    _evaluate_baseline_factor_library,
+    _build_discovered_factors_summary,
     _build_proposals_summary,
 )
 from alpha_mining.tools.storage_tools import (
@@ -16,6 +18,7 @@ from alpha_mining.tools.storage_tools import (
     get_session_iterations,
 )
 from alpha_mining.config import AlphaMiningConfig
+from tests.base_factors import get_base_factor_library
 
 
 class TestMiningState:
@@ -92,7 +95,10 @@ class TestWorkflow:
             "leader_decision": None,
             "should_continue": True,
             "optimization_direction": None,
-            "context_factors": [],
+            "selected_factor_id": None,
+            "reasoning_for_selection": None,
+            "suggestions_to_proposer": [],
+            "factors_to_remove": [],
             "discovered_factors": [],
             "is_complete": False,
             "final_candidates": [],
@@ -133,6 +139,71 @@ class TestWorkflow:
         factors = list_factors()
         assert len(factors) == 1
 
+    @pytest.mark.asyncio
+    async def test_evaluate_baseline_factor_library_adds_metrics(self, monkeypatch):
+        """Test baseline pre-evaluation writes evaluator metrics back to factors."""
+        baseline = get_base_factor_library("momentum_20d")
+
+        async def fake_evaluate_alpha_async(alpha, eval_config):
+            return {
+                "alpha_id": alpha["id"],
+                "result": {
+                    "status": "success",
+                    "metrics": {
+                        "ic_mean": 0.07,
+                        "ic_std": 0.14,
+                        "ir": 0.5,
+                        "sharpe": 1.25,
+                        "max_drawdown": 0.08,
+                        "turnover": 0.31,
+                        "long_short_return": 0.10,
+                        "win_rate": 0.57,
+                    },
+                },
+            }
+
+        monkeypatch.setattr("alpha_mining.workflow._evaluate_alpha_async", fake_evaluate_alpha_async)
+        evaluated = await _evaluate_baseline_factor_library(baseline, {"start_date": "2023-01-01", "end_date": "2023-03-31"})
+
+        assert evaluated[0]["evaluation"]["ic_mean"] == 0.07
+        assert evaluated[0]["evaluation"]["sharpe"] == 1.25
+
+    @pytest.mark.asyncio
+    async def test_run_mining_pre_evaluates_baseline_before_graph(self, monkeypatch):
+        """Test run_mining feeds evaluated baseline factors into the workflow graph."""
+        baseline = get_base_factor_library("momentum_20d")
+
+        async def fake_evaluate_baseline_factor_library(items, eval_config):
+            return [
+                {
+                    **factor,
+                    "evaluation": {
+                        "ic_mean": 0.06,
+                        "ic_std": 0.12,
+                        "ir": 0.5,
+                        "sharpe": 1.1,
+                        "max_drawdown": 0.09,
+                        "turnover": 0.33,
+                    },
+                }
+                for factor in items
+            ]
+
+        class FakeGraph:
+            async def ainvoke(self, state):
+                assert state["baseline_factor_library"][0]["evaluation"]["ic_mean"] == 0.06
+                state["final_candidates"] = [state["baseline_factor_library"][0]["id"]]
+                return state
+
+        monkeypatch.setattr("alpha_mining.workflow._evaluate_baseline_factor_library", fake_evaluate_baseline_factor_library)
+        monkeypatch.setattr("alpha_mining.workflow.build_mining_workflow", lambda config, use_parallel=True: FakeGraph())
+
+        config = AlphaMiningConfig()
+        config.iteration.max_iterations = 1
+        result = await run_mining(config, baseline, use_parallel=False)
+
+        assert result["factors"][0]["evaluation"]["ic_mean"] == 0.06
+
 
 class TestHelperFunctions:
     """Tests for workflow helper functions."""
@@ -140,7 +211,7 @@ class TestHelperFunctions:
     def test_build_factor_library_summary_empty(self):
         """Test building summary for empty library."""
         reset_storage()
-        summary = _build_factor_library_summary()
+        summary = _build_discovered_factors_summary()
         assert "No discovered" in summary
 
     def test_build_factor_library_summary_with_factors(self):
@@ -166,7 +237,7 @@ class TestHelperFunctions:
             },
         )
 
-        summary = _build_factor_library_summary()
+        summary = _build_discovered_factors_summary()
         assert "Test Alpha" in summary
         assert "IC=" in summary
 

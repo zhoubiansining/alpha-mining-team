@@ -18,12 +18,16 @@ from alpha_mining.tools.storage_tools import (
 )
 
 
-def get_default_llm():
+def get_default_llm(
+    model_name: str | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
+):
     """获取默认的LLM实例，配置OpenAI兼容API"""
     return ChatOpenAI(
-        model=os.getenv("LEADER_MODEL", "gpt-4o"),
-        api_key=os.getenv("OPENAI_API_KEY", "dummy"),
-        base_url=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1"),
+        model=model_name or os.getenv("LEADER_MODEL", "gpt-4o"),
+        api_key=api_key or os.getenv("OPENAI_API_KEY", "dummy"),
+        base_url=api_base or os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1"),
         temperature=0.0,
     )
 
@@ -47,13 +51,11 @@ def build_leader_agent(
         Deep Agent实例
     """
     if llm is None:
-        llm = get_default_llm()
-        if model_name:
-            llm.model_name = model_name
-        if api_base:
-            llm.base_url = api_base
-        if api_key:
-            llm.api_key = api_key
+        llm = get_default_llm(
+            model_name=model_name,
+            api_base=api_base,
+            api_key=api_key,
+        )
 
     # 定义子智能体
     proposer_agent: SubAgent = {
@@ -105,18 +107,29 @@ def parse_leader_decision(response: str) -> dict:
     Returns:
         解析后的决策字典
     """
+    if isinstance(response, dict):
+        return response
+
     try:
         # 尝试直接解析JSON
         return json.loads(response)
     except json.JSONDecodeError:
-        # 尝试提取JSON部分
+        # 尝试提取代码块中的JSON
         import re
-        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
-        if json_match:
+        code_block_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response)
+        if code_block_match:
             try:
-                return json.loads(json_match.group())
+                return json.loads(code_block_match.group(1))
             except json.JSONDecodeError:
                 pass
+
+        # 尝试提取首尾大括号包裹的完整JSON对象，支持嵌套字段
+        try:
+            first_brace = response.index("{")
+            last_brace = response.rindex("}")
+            return json.loads(response[first_brace:last_brace + 1])
+        except (ValueError, json.JSONDecodeError):
+            pass
 
         # 返回默认值
         return {
@@ -124,9 +137,11 @@ def parse_leader_decision(response: str) -> dict:
             "reason": "Failed to parse leader decision",
             "optimization_direction": None,
             "focus_areas": [],
-            "selected_for_context": [],
+            "selected_factor_id": None,
             "reasoning_for_selection": "",
             "suggestions_to_proposer": [],
+            "factors_to_remove": [],
+            "removal_reasoning": "",
             "final_candidates": None,
             "termination_reason": "Parse error",
         }

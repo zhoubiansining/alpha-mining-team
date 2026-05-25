@@ -38,11 +38,25 @@ Terminate if:
 - Maximum iterations reached
 - Optimal factor combination found
 
-## Context Selection
-Always reference the EXISTING FACTOR LIBRARY when making decisions:
-- What is their IC, IR, Sharpe?
-- What economic themes do they represent (momentum, volatility, liquidity)?
-- What aspects should new factors complement?
+## Context Selection (Single Factor Per Round)
+You select ONE specific factor per iteration to optimize. This focuses the optimization effort.
+
+Consider selecting factors that:
+- Have clear improvement potential
+- Align with current optimization direction
+- Would benefit most from the proposed enhancements
+
+## Factor Library Management (Use Cautiously)
+You can manage the factor library to maintain quality:
+
+**Adding Good Candidates**: High-quality factors that show promise can be added to the factor library.
+
+**Removing Poor Candidates** (USE CAUTIOUSLY): Only remove factors that are definitively poor:
+- Consistently negative IC across multiple evaluations
+- Fundamental design flaws that cannot be fixed
+- Redundant with better-performing factors
+
+Never remove factors just because they're average - a diverse library is valuable.
 
 ## Output Format
 Format your output as a JSON object:
@@ -51,9 +65,11 @@ Format your output as a JSON object:
     "reason": "explanation for decision",
     "optimization_direction": "what to focus on" or null,
     "focus_areas": ["area1", "area2"] or [],
-    "selected_for_context": ["alpha_id1", "alpha_id2"] or [],
-    "reasoning_for_selection": "why these factors were selected",
+    "selected_factor_id": "alpha_id" or null,
+    "reasoning_for_selection": "why this factor was selected for optimization",
     "suggestions_to_proposer": ["suggestion1", "suggestion2"] or [],
+    "factors_to_remove": ["alpha_id1", "alpha_id2"] or [],
+    "removal_reasoning": "reason for removing factors" or "",
     "final_candidates": ["alpha_id1", "alpha_id2"] or null (only if should_continue is false),
     "termination_reason": "reason for termination" or null
 }
@@ -67,7 +83,7 @@ Iteration: {iteration}
 Max Iterations: {max_iterations}
 
 ## BASELINE FACTOR LIBRARY
-These are the existing factors to improve upon:
+These are the existing factors to improve upon (MUST use Python class format implementing AlphaFactorTemplate):
 {baseline_factor_library}
 
 ## Exploration Progress
@@ -77,13 +93,17 @@ New candidates this round: {new_candidates_count}
 ## Recent Proposals (Last Iteration)
 {recent_proposals}
 
-## Recent Critic Feedbacks
+## Recent Critic Feedbacks (with Expected Match Scores)
 {recent_feedbacks}
 
 ## Metrics Overview (Discovered vs Baseline)
 {metrics_overview}
 
 ## Your Decision
-Based on the above, decide whether to continue exploring or submit final candidates.
+Based on the above, decide whether to:
+1. Continue exploring (select ONE factor to optimize)
+2. Remove poor-performing factors from the library
+3. Terminate and submit final candidates
+
 Output your decision in JSON format with all required fields.
 """

@@ -16,7 +16,7 @@ class CriticFeedback(BaseModel):
     # 评分 (1-5)
     ratings: dict[str, int] = Field(
         default_factory=dict,
-        description="各维度评分"
+        description="各维度评分，包含: theoretical_soundness, backtest_quality, robustness, diversification, expected_match"
     )
 
     # 具体反馈
@@ -36,6 +36,16 @@ class CriticFeedback(BaseModel):
     # 决策
     can_proceed: bool = Field(description="是否可以进入下一阶段")
 
+    # 预期匹配度评估（新增）
+    expected_match_score: float = Field(
+        default=0.5,
+        description="预期匹配度：Proposer的优化思路与实际回测结果的匹配程度，0.0-1.0"
+    )
+    expected_match_reason: str = Field(
+        default="",
+        description="预期匹配度评估理由"
+    )
+
     model_config = {
         "json_encoders": {datetime: lambda v: v.isoformat()}
     }
@@ -50,6 +60,7 @@ class CriticFeedback(BaseModel):
             "concerns": self.concerns,
             "actionable_suggestions": self.actionable_suggestions,
             "can_proceed": self.can_proceed,
+            "expected_match_score": self.expected_match_score,
         }
 
 
@@ -69,20 +80,30 @@ class LeaderDecision(BaseModel):
         description="重点关注领域"
     )
 
-    # 上下文管理
-    selected_for_context: list[str] = Field(
-        default_factory=list,
-        description="选入探索上下文的因子ID"
+    # 上下文管理 - 单因子选择（简化复杂性）
+    selected_factor_id: str | None = Field(
+        default=None,
+        description="本轮选择的基线因子ID（用于确定优化方向）"
     )
     reasoning_for_selection: str = Field(
         default="",
-        description="选择理由"
+        description="选择该因子的理由"
     )
 
     # 反馈路由
     suggestions_to_proposer: list[str] = Field(
         default_factory=list,
         description="传递给Proposer的建议"
+    )
+
+    # 因子库管理（可选，谨慎删除）
+    factors_to_remove: list[str] = Field(
+        default_factory=list,
+        description="建议删除的低价值因子ID列表（可选，可能为空）"
+    )
+    removal_reasoning: str = Field(
+        default="",
+        description="删除因子的理由"
     )
 
     # 终止时
