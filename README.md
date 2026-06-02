@@ -160,6 +160,41 @@ ALPHA_MINING_DEBUG_PROMPTS=0 ./scripts/run_real_smoke.sh momentum_20d
 python scripts/real_llm_smoke_test.py --baseline momentum_20d --max-iterations 1 --serial
 ```
 
+### 最终评测与可视化 Pipeline
+
+一键启动服务并运行完整评测，生成性能对比可视化报告：
+
+```bash
+export OPENAI_API_KEY="your-api-key"
+
+./scripts/run_final_eval.sh momentum_20d
+```
+
+**功能特性**：
+- 自动启动 `data_api` (port 18001) 和 `back_test` (port 18000) 服务
+- 等待服务就绪后运行完整评测流程
+- 对比 Baseline 与 Agent 优化因子的多维指标 (IC Mean, IR, Sharpe, Annual Return)
+- 生成 2x2 可视化对比报告 (`eval_report_{baseline_name}.png`)
+
+**参数配置**：
+
+```bash
+# 单因子测试（默认）
+./scripts/run_final_eval.sh momentum_20d
+
+# 全量测试（所有内置 baseline）
+./scripts/run_final_eval.sh all
+
+# 自定义迭代次数和回测区间
+MAX_ITERATIONS=5 START_DATE=2023-01-01 END_DATE=2023-06-30 ./scripts/run_final_eval.sh mean_reversion_20d
+```
+
+**单独运行评测脚本**（如服务已启动）：
+
+```bash
+python scripts/final_eval_pipeline.py --baseline momentum_20d --max-iter 3 --universe HS300 --start 2023-01-01 --end 2023-03-31
+```
+
 ### Data API真实数据检查
 
 如果怀疑回测一直落到 shadow 数据，可以先单独检查 `data_api` 是否返回真实日频行情：
@@ -293,8 +328,18 @@ class CriticFeedback:
 ```python
 class LeaderDecision:
     selected_factor_id: str           # 本轮选择的基线因子ID
-    factors_to_remove: list[str]     # 建议删除的因子
-    removal_reasoning: str            # 删除理由
+    optimization_direction: str       # 优化方向
+    suggestions_to_proposer: list     # 传递给Proposer的建议
+```
+
+### CuratorDecision
+
+```python
+class CuratorDecision:
+    admitted_factors: list[str]      # 准入因子库的新因子
+    rejected_factors: list[str]      # 被拒绝的新因子
+    factors_to_remove: list[str]     # 从因子库中删除的旧因子
+    library_summary: str             # 因子库状态摘要
 ```
 
 ## 开发
@@ -307,7 +352,7 @@ pytest tests/ -v
 
 ### 代码结构
 
-- `alpha_mining/agents/` - 智能体实现（Leader、Proposer、Critic）
+- `alpha_mining/agents/` - 智能体实现（Leader、Proposer、Critic、Curator）
 - `alpha_mining/prompts/` - 各智能体的系统提示词和用户提示词
 - `alpha_mining/schemas/` - Pydantic数据模型
 - `alpha_mining/tools/` - 存储工具和评估接口

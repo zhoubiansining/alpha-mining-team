@@ -140,8 +140,6 @@ def parse_leader_decision(response: str) -> dict:
             "selected_factor_id": None,
             "reasoning_for_selection": "",
             "suggestions_to_proposer": [],
-            "factors_to_remove": [],
-            "removal_reasoning": "",
             "final_candidates": None,
             "termination_reason": "Parse error",
         }

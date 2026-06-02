@@ -35,9 +35,11 @@ from alpha_mining.schemas.evaluation import AlphaEvaluation
 from alpha_mining.agents.leader import build_leader_agent, parse_leader_decision
 from alpha_mining.agents.proposer import build_proposer_agent, parse_alpha_proposals
 from alpha_mining.agents.critic import build_critic_agent, parse_critic_feedback
+from alpha_mining.agents.curator import build_curator_agent, parse_curator_decision
 from alpha_mining.prompts.leader_prompts import LEADER_ITERATION_PROMPT
 from alpha_mining.prompts.proposer_prompts import PROPOSER_USER_PROMPT
 from alpha_mining.prompts.critic_prompts import CRITIC_USER_PROMPT
+from alpha_mining.prompts.curator_prompts import CURATOR_USER_PROMPT
 
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,9 @@ class MiningState(TypedDict):
     reasoning_for_selection: Optional[str]
     suggestions_to_proposer: list[str]
     factors_to_remove: list[str]
+
+    # Curator决策
+    curator_decision: Optional[dict]
 
     # 已发现的因子（探索过程中产生的）
     discovered_factors: list[str]
@@ -189,7 +194,8 @@ def _build_discovered_factors_summary() -> str:
 def _build_iteration_context(state: MiningState) -> dict:
     """构建迭代上下文"""
     baseline = state.get("baseline_factor_library", [])
-    discovered = list_factors()
+    discovered_ids = state.get("discovered_factors", [])
+    discovered = [f for f in list_factors() if f.id in discovered_ids]
 
     # 已发现因子以存储层为准；不要依赖轮次过滤，否则本轮刚评估成功的因子在下一次Leader决策中会被漏掉。
     discovered_count = len(discovered)
@@ -227,11 +233,13 @@ def _build_iteration_context(state: MiningState) -> dict:
                 "sharpe": eval_result.sharpe,
             })
 
+    curator_decision = state.get("curator_decision") or {}
     return {
         "discovered_count": discovered_count,
         "recent_feedbacks": recent_feedbacks,
         "baseline_metrics": baseline_metrics,
         "discovered_metrics": discovered_metrics,
+        "curator_summary": curator_decision.get("library_summary", "No curation yet."),
     }
 
 
@@ -258,6 +266,23 @@ def _find_factor_reference(reference: str | None, baseline: list[dict]) -> dict 
             }
 
     return None
+
+
+def _resolve_candidate_ids(references: list[str], baseline: list[dict]) -> list[str]:
+    """Resolve a list of factor name/id references to actual UUIDs.
+
+    Leader may output factor names or IDs as final_candidates.
+    This normalizes them to UUIDs so downstream code can match them against
+    factor.id fields.
+    """
+    resolved = []
+    for ref in references:
+        factor = _find_factor_reference(ref, baseline)
+        if factor:
+            resolved.append(factor.get("id") if isinstance(factor, dict) else factor.id)
+        else:
+            resolved.append(ref)  # Keep as-is if unresolvable (fallback)
+    return list(dict.fromkeys(resolved))  # deduplicate, preserve order
 
 
 def _sync_discovered_state(state: MiningState) -> None:
@@ -491,6 +516,49 @@ def _sync_call_critic(
         }
 
 
+def _sync_call_curator(curator_prompt: str, config: dict) -> dict:
+    """同步调用Curator Agent"""
+    try:
+        logger.info(
+            "Calling Curator agent | model=%s | prompt_chars=%d",
+            config.get("critic_model", "gpt-4o"),
+            len(curator_prompt),
+        )
+        _log_debug_payload("[Curator Prompt]", curator_prompt)
+        agent = build_curator_agent(
+            model_name=config.get("critic_model", "gpt-4o"),
+            api_base=config.get("api_base"),
+            api_key=config.get("api_key"),
+        )
+        response = _invoke_subagent_config_text(agent, curator_prompt)
+        logger.info("Curator agent returned %d chars", len(response))
+        _log_debug_payload("[Curator Response]", response)
+        return parse_curator_decision(response)
+    except Exception as e:
+        logger.error(f"Curator agent error: {e}")
+        return {
+            "admitted_factors": [],
+            "admission_reasons": {},
+            "rejected_factors": [],
+            "rejection_reasons": {},
+            "factors_to_remove": [],
+            "removal_reasons": {},
+            "library_summary": f"Curator error: {e}",
+            "quality_assessment": "Error",
+        }
+
+
+async def _call_curator_agent(curator_prompt: str, config: dict) -> dict:
+    """异步调用Curator Agent"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        _sync_call_curator,
+        curator_prompt,
+        config,
+    )
+
+
 def leader_node(state: MiningState) -> MiningState:
     """
     Leader决策节点。
@@ -536,6 +604,7 @@ def leader_node(state: MiningState) -> MiningState:
         discovered_count=context["discovered_count"],
         new_candidates_count=len(state.get("current_proposals", [])),
         recent_proposals=_build_proposals_summary(state.get("current_proposals", [])),
+        curator_summary=context.get("curator_summary", "No curation yet."),
         recent_feedbacks=json.dumps(context["recent_feedbacks"], indent=2),
         metrics_overview=f"Baseline: {json.dumps(context['baseline_metrics'])}\nDiscovered: {json.dumps(context['discovered_metrics'])}",
     )
@@ -570,30 +639,24 @@ def leader_node(state: MiningState) -> MiningState:
             logger.warning("Leader selected factor could not be resolved | raw=%s", selected_reference)
     state["reasoning_for_selection"] = decision.get("reasoning_for_selection", "")
     state["suggestions_to_proposer"] = decision.get("suggestions_to_proposer", [])
-    state["factors_to_remove"] = decision.get("factors_to_remove", [])
-
-    # 处理因子库管理
-    if state["factors_to_remove"]:
-        for factor_id in state["factors_to_remove"]:
-            factor = _find_factor_reference(factor_id, baseline)
-            resolved_id = factor.get("id") if factor else factor_id
-            delete_factor_record(resolved_id)
-            if resolved_id in state["discovered_factors"]:
-                state["discovered_factors"].remove(resolved_id)
-        logger.info("Removed %d factors from library: %s", len(state["factors_to_remove"]), state["factors_to_remove"])
 
     # 如果是终止决策
     if not state["should_continue"]:
         all_candidates = state.get("discovered_factors", []) + [f.get("id", "") for f in baseline]
-        final_candidates = decision.get("final_candidates") or list(dict.fromkeys(all_candidates))
-        state["leader_decision"]["final_candidates"] = final_candidates
-        state["final_candidates"] = final_candidates
+        raw_candidates = decision.get("final_candidates") or list(dict.fromkeys(all_candidates))
+        # Resolve names to UUIDs — Leader may output factor names instead of IDs
+        resolved = _resolve_candidate_ids(raw_candidates, baseline)
+        logger.info(
+            "Resolved final_candidates | raw=%s | resolved=%s",
+            raw_candidates, resolved,
+        )
+        state["leader_decision"]["final_candidates"] = resolved
+        state["final_candidates"] = resolved
 
     logger.info(
-        "Leader decision | continue=%s | selected_factor=%s | remove=%s | final_candidates=%s",
+        "Leader decision | continue=%s | selected_factor=%s | final_candidates=%s",
         state["should_continue"],
         state.get("selected_factor_id"),
-        state.get("factors_to_remove"),
         state.get("final_candidates") if not state["should_continue"] else [],
     )
     return state
@@ -744,11 +807,6 @@ def evaluator_node(state: MiningState) -> MiningState:
             store_evaluation(alpha_id, metrics)
             alpha["evaluation"] = metrics
             logger.info("Evaluator success | alpha_id=%s | ic_mean=%.4f | sharpe=%.4f", alpha_id, metrics.get("ic_mean", 0.0), metrics.get("sharpe", 0.0))
-
-            # 标记为已发现
-            if alpha_id not in state.get("discovered_factors", []):
-                state.setdefault("discovered_factors", []).append(alpha_id)
-                add_discovered_alpha(alpha_id)
         else:
             alpha["evaluation"] = None
             alpha["error_message"] = result.get("error_message")
@@ -846,10 +904,6 @@ async def evaluator_node_parallel(state: MiningState) -> MiningState:
             store_evaluation(alpha_id, metrics)
             alpha["evaluation"] = metrics
             logger.info("Evaluator success | alpha_id=%s | ic_mean=%.4f | sharpe=%.4f", alpha_id, metrics.get("ic_mean", 0.0), metrics.get("sharpe", 0.0))
-
-            if alpha_id not in state.get("discovered_factors", []):
-                state.setdefault("discovered_factors", []).append(alpha_id)
-                add_discovered_alpha(alpha_id)
         else:
             alpha["evaluation"] = None
             alpha["error_message"] = result.get("error_message")
@@ -934,7 +988,7 @@ async def critic_node_parallel(state: MiningState) -> MiningState:
             feedback.get("expected_match_score", 0.0),
         )
 
-    return _advance_iteration(state)
+    return state
 
 
 def critic_node(state: MiningState) -> MiningState:
@@ -1015,6 +1069,158 @@ def _critic_node_sync(state: MiningState) -> MiningState:
             feedback.get("can_proceed"),
             feedback.get("expected_match_score", 0.0),
         )
+
+    return state
+
+
+def curator_node(state: MiningState) -> MiningState:
+    """
+    Curator节点 — 后Critic因子库守门人。
+    评审本轮所有新因子，决定哪些进入因子库，哪些旧因子需要删除。
+    替代了原来Leader的因子库管理职责。
+    """
+    logger.info(
+        "Curator node start | session=%s | iteration=%d | proposals=%d",
+        state.get("session_id", ""),
+        state["iteration"],
+        len(state["current_proposals"]),
+    )
+
+    if not state["current_proposals"]:
+        _advance_iteration(state)
+        state["curator_decision"] = {
+            "admitted_factors": [],
+            "rejected_factors": [],
+            "factors_to_remove": [],
+            "library_summary": "No proposals to curate.",
+            "quality_assessment": "No new factors this round.",
+        }
+        return state
+
+    config = state["config"]
+    baseline = state.get("baseline_factor_library", [])
+    iteration = state["iteration"]
+
+    # 构建新候选因子摘要（含Critic反馈和回测指标）
+    new_candidates_parts = []
+    for alpha in state["current_proposals"]:
+        alpha_id = alpha.get("id", "")
+        evaluation = alpha.get("evaluation") or {}
+        feedback = alpha.get("feedback") or {}
+
+        ratings = feedback.get("ratings", {})
+        avg_rating = sum(ratings.values()) / len(ratings) if ratings else 0
+
+        new_candidates_parts.append(
+            f"### {alpha.get('name', 'Unknown')} (ID: {alpha_id})\n"
+            f"- Description: {alpha.get('description', '')}\n"
+            f"- Optimization Rationale: {alpha.get('optimization_rationale', '')}\n"
+            f"- Backtest: IC={evaluation.get('ic_mean', 0):.4f}, Sharpe={evaluation.get('sharpe', 0):.4f}, "
+            f"IR={evaluation.get('ir', 0):.2f}, MaxDD={evaluation.get('max_drawdown', 0):.2%}\n"
+            f"- Critic: can_proceed={feedback.get('can_proceed', False)}, "
+            f"match_score={feedback.get('expected_match_score', 0):.2f}, "
+            f"avg_rating={avg_rating:.1f}\n"
+            f"- Critic Concerns: {'; '.join(feedback.get('concerns', [])) or 'None'}\n"
+            f"- Critic Suggestions: {'; '.join(feedback.get('actionable_suggestions', [])) or 'None'}\n"
+        )
+
+    new_candidates_summary = "\n".join(new_candidates_parts) if new_candidates_parts else "No new candidates."
+
+    # 构建现有因子库摘要
+    existing_library_parts = []
+    for factor in list_factors():
+        eval_result = get_evaluation_by_alpha_id(factor.id)
+        eval_info = ""
+        if eval_result:
+            eval_info = f"IC={eval_result.ic_mean:.4f}, Sharpe={eval_result.sharpe:.4f}, IR={eval_result.ir:.2f}"
+        existing_library_parts.append(f"- {factor.name} (ID: {factor.id}, iter {factor.iteration}): {eval_info}")
+
+    existing_library_summary = "\n".join(existing_library_parts) if existing_library_parts else "No existing factors."
+
+    # 构建Curator提示词
+    curator_prompt = CURATOR_USER_PROMPT.format(
+        iteration=iteration,
+        max_iterations=config.get("max_iterations", 20),
+        new_candidates_summary=new_candidates_summary,
+        existing_library_summary=existing_library_summary,
+        baseline_summary=_build_baseline_summary(baseline),
+    )
+
+    # 调用Curator
+    try:
+        decision = asyncio.run(_call_curator_agent(curator_prompt, config))
+    except RuntimeError:
+        decision = asyncio.get_event_loop().run_until_complete(
+            _call_curator_agent(curator_prompt, config)
+        )
+
+    state["curator_decision"] = decision
+
+    # 执行Curator决策：准入新因子
+    admitted = set(decision.get("admitted_factors", []))
+    rejected = set(decision.get("rejected_factors", []))
+    for alpha in state["current_proposals"]:
+        alpha_id = alpha.get("id", "")
+        if not alpha_id:
+            continue
+        if alpha_id in admitted:
+            if alpha_id not in state.get("discovered_factors", []):
+                state.setdefault("discovered_factors", []).append(alpha_id)
+                add_discovered_alpha(alpha_id)
+            logger.info(
+                "Curator admitted factor | id=%s | name=%s | reason=%s",
+                alpha_id,
+                alpha.get("name", ""),
+                decision.get("admission_reasons", {}).get(alpha_id, ""),
+            )
+        elif alpha_id in rejected:
+            logger.info(
+                "Curator rejected factor | id=%s | name=%s | reason=%s",
+                alpha_id,
+                alpha.get("name", ""),
+                decision.get("rejection_reasons", {}).get(alpha_id, ""),
+            )
+        else:
+            # 未被明确提到的因子：如Critic评价尚可则默认准入
+            feedback = alpha.get("feedback") or {}
+            if feedback.get("can_proceed") and feedback.get("expected_match_score", 0) >= 0.4:
+                if alpha_id not in state.get("discovered_factors", []):
+                    state.setdefault("discovered_factors", []).append(alpha_id)
+                    add_discovered_alpha(alpha_id)
+                logger.info(
+                    "Curator default-admitted factor | id=%s | name=%s (not explicitly ruled on)",
+                    alpha_id,
+                    alpha.get("name", ""),
+                )
+            else:
+                logger.info(
+                    "Curator default-rejected factor | id=%s | name=%s (not explicitly ruled on, poor metrics)",
+                    alpha_id,
+                    alpha.get("name", ""),
+                )
+
+    # 执行Curator决策：删除旧因子
+    factors_to_remove = decision.get("factors_to_remove", [])
+    if factors_to_remove:
+        for factor_id in factors_to_remove:
+            factor = _find_factor_reference(factor_id, baseline)
+            resolved_id = factor.get("id") if factor else factor_id
+            delete_factor_record(resolved_id)
+            if resolved_id in state["discovered_factors"]:
+                state["discovered_factors"].remove(resolved_id)
+            logger.info(
+                "Curator removed old factor | id=%s | reason=%s",
+                resolved_id,
+                decision.get("removal_reasons", {}).get(factor_id, ""),
+            )
+
+    logger.info(
+        "Curator decision | admitted=%d | rejected=%d | removed=%d | library_size=%d",
+        len(admitted),
+        len(rejected),
+        len(factors_to_remove),
+        len(state.get("discovered_factors", [])),
+    )
 
     return _advance_iteration(state)
 
@@ -1154,6 +1360,7 @@ def build_mining_workflow(
     workflow.add_node("evaluator", evaluator_node_parallel if use_parallel else evaluator_node)
     workflow.add_node("compliance_fix", compliance_fix_node)
     workflow.add_node("critic", critic_node_parallel if use_parallel else critic_node)
+    workflow.add_node("curator", curator_node)
     workflow.add_node("finalize", finalize_node)
 
     # 定义边
@@ -1183,7 +1390,9 @@ def build_mining_workflow(
         }
     )
 
-    workflow.add_edge("critic", "leader")
+    # Critic → Curator → Leader (factor library management now handled by Curator)
+    workflow.add_edge("critic", "curator")
+    workflow.add_edge("curator", "leader")
     workflow.add_edge("finalize", END)
 
     return workflow.compile()
@@ -1263,6 +1472,7 @@ async def run_mining(
         "reasoning_for_selection": None,
         "suggestions_to_proposer": [],
         "factors_to_remove": [],
+        "curator_decision": None,
         "discovered_factors": [],
         "is_complete": False,
         "final_candidates": [],

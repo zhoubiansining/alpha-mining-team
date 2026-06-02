@@ -546,4 +546,6 @@ def get_factor_metrics(alpha_id: str) -> dict | None:
         "sharpe": eval_result.sharpe,
         "max_drawdown": eval_result.max_drawdown,
         "turnover": eval_result.turnover,
+        "long_short_return": eval_result.long_short_return,
+        "win_rate": eval_result.win_rate,
     }

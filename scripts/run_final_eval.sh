@@ -34,7 +34,7 @@ trap cleanup EXIT INT TERM
 export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}"
 
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  echo "OPENAI_API_KEY is required for a real LLM smoke test." >&2
+  echo "OPENAI_API_KEY is required for real LLM evaluation." >&2
   exit 1
 fi
 
@@ -42,13 +42,12 @@ export DATA_API_PORT
 export BACK_TEST_PORT
 export DATA_API_BASE="${DATA_API_BASE:-http://127.0.0.1:${DATA_API_PORT}}"
 export OPENAI_API_BASE LEADER_MODEL PROPOSER_MODEL CRITIC_MODEL EVALUATOR_ENDPOINT EVALUATOR_TIMEOUT ALPHA_MINING_LOG_LEVEL ALPHA_MINING_DEBUG_PROMPTS
-export DATA_API_BASE
 
 pushd "${ROOT_DIR}" >/dev/null
 
-nohup "$PYTHON_BIN" -m data_api.main > /tmp/data_api.smoke.log 2>&1 &
+nohup "$PYTHON_BIN" -m data_api.main > /tmp/data_api.eval.log 2>&1 &
 pids+=("$!")
-nohup "$PYTHON_BIN" -m back_test.main > /tmp/back_test.smoke.log 2>&1 &
+nohup "$PYTHON_BIN" -m back_test.main > /tmp/back_test.eval.log 2>&1 &
 pids+=("$!")
 
 printf 'Waiting for services...\n'
@@ -58,9 +57,9 @@ for i in $(seq 1 60); do
     if ! kill -0 "$pid" >/dev/null 2>&1; then
       echo "Service process exited before readiness: pid=$pid" >&2
       echo "--- data_api log ---" >&2
-      tail -n 80 /tmp/data_api.smoke.log >&2 || true
+      tail -n 80 /tmp/data_api.eval.log >&2 || true
       echo "--- back_test log ---" >&2
-      tail -n 80 /tmp/back_test.smoke.log >&2 || true
+      tail -n 80 /tmp/back_test.eval.log >&2 || true
       exit 1
     fi
   done
@@ -76,7 +75,7 @@ for url in (f"http://127.0.0.1:{data_port}/health", f"http://127.0.0.1:{back_por
 with urllib.request.urlopen(f"http://127.0.0.1:{back_port}/openapi.json", timeout=2) as resp:
     schema = json.load(resp)
 if "/evaluate" not in schema.get("paths", {}):
-    raise RuntimeError("back_test service on configured port does not expose /evaluate")
+    raise RuntimeError("back_test service does not expose /evaluate")
 
 # Verify data_api returns non-empty bars (avoid shadow data race condition)
 try:
@@ -86,7 +85,8 @@ try:
     symbols = univ_data.get("symbols", [])
     if not symbols:
         raise RuntimeError("data_api returned empty universe for HS300")
-    bars_url = f"http://127.0.0.1:{data_port}/bars/daily?symbol={symbols[0]}&start=2023-01-01&end=2023-03-31&market=cn_stock&adjust=qfq"
+    # Try fetching bars for first symbol
+    bars_url = f"http://127.0.0.1:{data_port}/bars/daily?symbol={symbols[0]}&start=2018-01-01&end=2023-12-31&market=cn_stock&adjust=qfq"
     bars_resp = urllib.request.urlopen(bars_url, timeout=5)
     bars_data = json.loads(bars_resp.read())
     if not bars_data.get("bars"):
@@ -108,21 +108,20 @@ PY
     echo "--- readiness error ---" >&2
     echo "$last_ready_error" >&2
     echo "--- data_api log ---" >&2
-    tail -n 80 /tmp/data_api.smoke.log >&2 || true
+    tail -n 80 /tmp/data_api.eval.log >&2 || true
     echo "--- back_test log ---" >&2
-    tail -n 80 /tmp/back_test.smoke.log >&2 || true
+    tail -n 80 /tmp/back_test.eval.log >&2 || true
     exit 1
   fi
 done
 
-printf 'Running real LLM smoke test...\n'
-"$PYTHON_BIN" scripts/real_llm_smoke_test.py \
+printf 'Running final evaluation pipeline...\n'
+"$PYTHON_BIN" scripts/final_eval_pipeline.py \
   --baseline "${1:-momentum_20d}" \
-  --max-iterations "${MAX_ITERATIONS:-3}" \
+  --max-iter "${MAX_ITERATIONS:-10}" \
   --universe "${UNIVERSE:-HS300}" \
-  --start-date "${START_DATE:-2023-01-01}" \
-  --end-date "${END_DATE:-2023-03-31}" \
-  ${USE_SERIAL:+--serial}
+  --start "${START_DATE:-2018-01-01}" \
+  --end "${END_DATE:-2023-12-31}"
 
 popd >/dev/null
 trap - EXIT INT TERM

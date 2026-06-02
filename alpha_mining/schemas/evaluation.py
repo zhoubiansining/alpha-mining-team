@@ -59,4 +59,6 @@ class AlphaEvaluation(BaseModel):
             "sharpe": self.sharpe,
             "max_drawdown": self.max_drawdown,
             "turnover": self.turnover,
+            "long_short_return": self.long_short_return,
+            "win_rate": self.win_rate,
         }
