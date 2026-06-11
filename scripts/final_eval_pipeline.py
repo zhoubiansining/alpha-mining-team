@@ -453,6 +453,18 @@ def save_results(
         json.dump(summary, f, ensure_ascii=False, indent=2)
     logger.info("Summary saved: %s", summary_path)
 
+    # ── 5. Trajectory JSON ─────────────────────────────────────────────────
+    iteration_history = mining_result.get("iteration_history", [])
+    if iteration_history:
+        trajectory_path = output_dir / "trajectory.json"
+        with open(trajectory_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "baseline_name": baseline_name,
+                "total_iterations": len(iteration_history),
+                "iterations": iteration_history,
+            }, f, ensure_ascii=False, indent=2)
+        logger.info("Trajectory saved: %s (%d iterations)", trajectory_path, len(iteration_history))
+
     return summary
 
 

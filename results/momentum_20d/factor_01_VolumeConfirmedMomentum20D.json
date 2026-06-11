@@ -1,0 +1,28 @@
+{
+  "rank": 1,
+  "factor_id": "f877937d-6ba9-4fe9-97ec-5977c4e11bac",
+  "name": "VolumeConfirmedMomentum20D",
+  "description": "20-day price return multiplied by the ratio of 20-day average volume to 60-day average volume. This amplifies momentum signals supported by increasing liquidity.",
+  "parent_id": "",
+  "iteration": 0,
+  "optimization_rationale": "",
+  "status": "success",
+  "metrics": {
+    "ic_mean": 0.009475153197023108,
+    "ic_std": 0,
+    "ir": 0.023976306878495897,
+    "sharpe": 0.5890649422183356,
+    "max_drawdown": 0.5875623089298179,
+    "turnover": 0.32,
+    "long_short_return": 0.2159937602925014,
+    "win_rate": 0.4896907216494845
+  },
+  "improvement_vs_baseline": {
+    "ic_mean_delta": 0.0014483937064586686,
+    "sharpe_delta": 0.09775733593412406,
+    "ir_delta": 0.0036870629948693515,
+    "return_delta": 0.029533604185429913,
+    "mdd_delta": 0.005643558558055428
+  },
+  "error_message": ""
+}

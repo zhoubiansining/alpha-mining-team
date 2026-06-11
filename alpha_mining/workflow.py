@@ -84,6 +84,9 @@ class MiningState(TypedDict):
     # 已发现的因子（探索过程中产生的）
     discovered_factors: list[str]
 
+    # 每轮迭代的轨迹记录（包含所有合法提案及其最终命运）
+    all_iterations: list[dict]
+
     # 控制
     is_complete: bool
     final_candidates: list[str]
@@ -1222,6 +1225,65 @@ def curator_node(state: MiningState) -> MiningState:
         len(state.get("discovered_factors", [])),
     )
 
+    # 记录本轮迭代轨迹：包含所有合法提案及其最终命运
+    # 排除不合法的因子（compliance check failed / evaluation missing）
+    iteration_proposals = []
+    for alpha in state["current_proposals"]:
+        alpha_id = alpha.get("id", "")
+        if not alpha_id:
+            continue
+        evaluation = alpha.get("evaluation") or {}
+        # 只记录通过合规检查、有实际评估结果的因子
+        if not evaluation:
+            continue
+        feedback = alpha.get("feedback") or {}
+        # 判断该因子的最终命运
+        if alpha_id in admitted:
+            fate = "admitted"
+        elif alpha_id in rejected:
+            fate = "rejected"
+        elif feedback.get("can_proceed") and feedback.get("expected_match_score", 0) >= 0.4:
+            fate = "admitted"  # 默认准入
+        else:
+            fate = "rejected"  # 默认拒绝
+        iteration_proposals.append({
+            "id": alpha_id,
+            "name": alpha.get("name", ""),
+            "description": alpha.get("description", ""),
+            "code": alpha.get("code", ""),
+            "parent_id": alpha.get("parent_id", ""),
+            "evaluation": {
+                "ic_mean": evaluation.get("ic_mean"),
+                "ic_std": evaluation.get("ic_std"),
+                "ir": evaluation.get("ir"),
+                "sharpe": evaluation.get("sharpe"),
+                "max_drawdown": evaluation.get("max_drawdown"),
+                "long_short_return": evaluation.get("long_short_return"),
+                "win_rate": evaluation.get("win_rate"),
+                "turnover": evaluation.get("turnover"),
+            },
+            "critic": {
+                "ratings": feedback.get("ratings", {}),
+                "expected_match_score": feedback.get("expected_match_score"),
+                "can_proceed": feedback.get("can_proceed"),
+                "concerns": feedback.get("concerns", []),
+                "actionable_suggestions": feedback.get("actionable_suggestions", []),
+            },
+            "fate": fate,
+        })
+
+    iteration_record = {
+        "iteration": state["iteration"],
+        "proposals": iteration_proposals,
+        "curator_summary": {
+            "admitted": list(admitted),
+            "rejected": list(rejected),
+            "removed": factors_to_remove,
+            "library_size_after": len(state.get("discovered_factors", [])),
+        },
+    }
+    state.setdefault("all_iterations", []).append(iteration_record)
+
     return _advance_iteration(state)
 
 
@@ -1474,6 +1536,7 @@ async def run_mining(
         "factors_to_remove": [],
         "curator_decision": None,
         "discovered_factors": [],
+        "all_iterations": [],
         "is_complete": False,
         "final_candidates": [],
     }
@@ -1521,4 +1584,5 @@ async def run_mining(
         "factors": all_factors,
         "final_candidates": final_state.get("final_candidates", []),
         "termination_reason": leader_decision.get("termination_reason"),
+        "iteration_history": final_state.get("all_iterations", []),
     }

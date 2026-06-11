@@ -1,0 +1,177 @@
+{
+  "baseline_name": "momentum_20d",
+  "eval_config": {
+    "universe": "HS300",
+    "start_date": "2018-01-01",
+    "end_date": "2023-12-31"
+  },
+  "total_candidates": 2,
+  "valid_candidates": 2,
+  "mining_iterations": 8,
+  "final_candidates": [
+    "d5b3a2a9-3f36-49ac-9e25-c8db588f3ed8",
+    "f877937d-6ba9-4fe9-97ec-5977c4e11bac"
+  ],
+  "termination_reason": "Optimal factor combination found with substantial improvement over baseline. Recent exploration shows diminishing returns with no new factor admissions in iteration 7. Best discovered factor (SurgeVolumeMomentum) achieves 95% IC improvement and 47% Sharpe improvement over baseline.",
+  "baseline_metrics": {
+    "ic_mean": 0.00802675949056444,
+    "ic_std": 0.3956164919995884,
+    "ir": 0.020289243883626545,
+    "sharpe": 0.49130760628421155,
+    "max_drawdown": 0.5819187503717624,
+    "turnover": 0.32,
+    "long_short_return": 0.18646015610707148,
+    "win_rate": 0.49690721649484537
+  },
+  "aggregate": {
+    "avg_ic_mean": 0.012525,
+    "avg_sharpe": 0.654897,
+    "avg_ir": 0.031997,
+    "improvement_ic_mean": 0.004498,
+    "improvement_sharpe": 0.163589
+  },
+  "best_by_ic": {
+    "factor": {
+      "rank": 2,
+      "factor_id": "d5b3a2a9-3f36-49ac-9e25-c8db588f3ed8",
+      "name": "SurgeVolumeMomentum",
+      "description": "20-day momentum weighted by the cross-sectional rank of the current volume ratio relative to its 60-day historical average. This detects accelerating volume trends (surges) rather than just high absolute volume.",
+      "parent_id": "",
+      "iteration": 0,
+      "optimization_rationale": "",
+      "status": "success",
+      "metrics": {
+        "ic_mean": 0.015575079840778515,
+        "ic_std": 0,
+        "ir": 0.040018512486835495,
+        "sharpe": 0.7207285547898119,
+        "max_drawdown": 0.4418635383554256,
+        "turnover": 0.32,
+        "long_short_return": 0.2285659882742339,
+        "win_rate": 0.42783505154639173
+      },
+      "improvement_vs_baseline": {
+        "ic_mean_delta": 0.0075483203502140755,
+        "sharpe_delta": 0.22942094850560035,
+        "ir_delta": 0.01972926860320895,
+        "return_delta": 0.04210583216716243,
+        "mdd_delta": -0.14005521201633686
+      },
+      "error_message": ""
+    },
+    "metrics": {
+      "alpha_id": "d5b3a2a9-3f36-49ac-9e25-c8db588f3ed8",
+      "ic_mean": 0.015575079840778515,
+      "ir": 0.040018512486835495,
+      "sharpe": 0.7207285547898119,
+      "max_drawdown": 0.4418635383554256,
+      "turnover": 0.32,
+      "long_short_return": 0.2285659882742339,
+      "win_rate": 0.42783505154639173
+    },
+    "improvement": {
+      "ic_mean_delta": 0.0075483203502140755
+    }
+  },
+  "best_by_sharpe": {
+    "factor": {
+      "rank": 2,
+      "factor_id": "d5b3a2a9-3f36-49ac-9e25-c8db588f3ed8",
+      "name": "SurgeVolumeMomentum",
+      "description": "20-day momentum weighted by the cross-sectional rank of the current volume ratio relative to its 60-day historical average. This detects accelerating volume trends (surges) rather than just high absolute volume.",
+      "parent_id": "",
+      "iteration": 0,
+      "optimization_rationale": "",
+      "status": "success",
+      "metrics": {
+        "ic_mean": 0.015575079840778515,
+        "ic_std": 0,
+        "ir": 0.040018512486835495,
+        "sharpe": 0.7207285547898119,
+        "max_drawdown": 0.4418635383554256,
+        "turnover": 0.32,
+        "long_short_return": 0.2285659882742339,
+        "win_rate": 0.42783505154639173
+      },
+      "improvement_vs_baseline": {
+        "ic_mean_delta": 0.0075483203502140755,
+        "sharpe_delta": 0.22942094850560035,
+        "ir_delta": 0.01972926860320895,
+        "return_delta": 0.04210583216716243,
+        "mdd_delta": -0.14005521201633686
+      },
+      "error_message": ""
+    },
+    "metrics": {
+      "alpha_id": "d5b3a2a9-3f36-49ac-9e25-c8db588f3ed8",
+      "ic_mean": 0.015575079840778515,
+      "ir": 0.040018512486835495,
+      "sharpe": 0.7207285547898119,
+      "max_drawdown": 0.4418635383554256,
+      "turnover": 0.32,
+      "long_short_return": 0.2285659882742339,
+      "win_rate": 0.42783505154639173
+    },
+    "improvement": {
+      "sharpe_delta": 0.22942094850560035
+    }
+  },
+  "all_factors": [
+    {
+      "rank": 1,
+      "factor_id": "f877937d-6ba9-4fe9-97ec-5977c4e11bac",
+      "name": "VolumeConfirmedMomentum20D",
+      "description": "20-day price return multiplied by the ratio of 20-day average volume to 60-day average volume. This amplifies momentum signals supported by increasing liquidity.",
+      "parent_id": "",
+      "iteration": 0,
+      "optimization_rationale": "",
+      "status": "success",
+      "metrics": {
+        "ic_mean": 0.009475153197023108,
+        "ic_std": 0,
+        "ir": 0.023976306878495897,
+        "sharpe": 0.5890649422183356,
+        "max_drawdown": 0.5875623089298179,
+        "turnover": 0.32,
+        "long_short_return": 0.2159937602925014,
+        "win_rate": 0.4896907216494845
+      },
+      "improvement_vs_baseline": {
+        "ic_mean_delta": 0.0014483937064586686,
+        "sharpe_delta": 0.09775733593412406,
+        "ir_delta": 0.0036870629948693515,
+        "return_delta": 0.029533604185429913,
+        "mdd_delta": 0.005643558558055428
+      },
+      "error_message": ""
+    },
+    {
+      "rank": 2,
+      "factor_id": "d5b3a2a9-3f36-49ac-9e25-c8db588f3ed8",
+      "name": "SurgeVolumeMomentum",
+      "description": "20-day momentum weighted by the cross-sectional rank of the current volume ratio relative to its 60-day historical average. This detects accelerating volume trends (surges) rather than just high absolute volume.",
+      "parent_id": "",
+      "iteration": 0,
+      "optimization_rationale": "",
+      "status": "success",
+      "metrics": {
+        "ic_mean": 0.015575079840778515,
+        "ic_std": 0,
+        "ir": 0.040018512486835495,
+        "sharpe": 0.7207285547898119,
+        "max_drawdown": 0.4418635383554256,
+        "turnover": 0.32,
+        "long_short_return": 0.2285659882742339,
+        "win_rate": 0.42783505154639173
+      },
+      "improvement_vs_baseline": {
+        "ic_mean_delta": 0.0075483203502140755,
+        "sharpe_delta": 0.22942094850560035,
+        "ir_delta": 0.01972926860320895,
+        "return_delta": 0.04210583216716243,
+        "mdd_delta": -0.14005521201633686
+      },
+      "error_message": ""
+    }
+  ]
+}

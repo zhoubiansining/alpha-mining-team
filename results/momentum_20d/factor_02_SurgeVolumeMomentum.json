@@ -1,0 +1,28 @@
+{
+  "rank": 2,
+  "factor_id": "d5b3a2a9-3f36-49ac-9e25-c8db588f3ed8",
+  "name": "SurgeVolumeMomentum",
+  "description": "20-day momentum weighted by the cross-sectional rank of the current volume ratio relative to its 60-day historical average. This detects accelerating volume trends (surges) rather than just high absolute volume.",
+  "parent_id": "",
+  "iteration": 0,
+  "optimization_rationale": "",
+  "status": "success",
+  "metrics": {
+    "ic_mean": 0.015575079840778515,
+    "ic_std": 0,
+    "ir": 0.040018512486835495,
+    "sharpe": 0.7207285547898119,
+    "max_drawdown": 0.4418635383554256,
+    "turnover": 0.32,
+    "long_short_return": 0.2285659882742339,
+    "win_rate": 0.42783505154639173
+  },
+  "improvement_vs_baseline": {
+    "ic_mean_delta": 0.0075483203502140755,
+    "sharpe_delta": 0.22942094850560035,
+    "ir_delta": 0.01972926860320895,
+    "return_delta": 0.04210583216716243,
+    "mdd_delta": -0.14005521201633686
+  },
+  "error_message": ""
+}
